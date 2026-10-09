@@ -1,515 +1,574 @@
-# Vulkan Depth Probe
+# WoW Vulkan Probe
 
-**World of Warcraft 3.3.5a** için Linux'ta, Proton + DXVK altında çalışan, açık (explicit) bir Vulkan katmanı (`VK_LAYER_depth_probe`).
+An explicit Vulkan layer (`VK_LAYER_depth_probe`) that adds modern rendering effects to **World of Warcraft 3.3.5a** running on Linux under Proton + DXVK.
 
-Oyuna, Wine prefix'ine ya da DXVK'ya dokunmaz; DLL kurmaz. Oyunun DXVK'ya verdiği Vulkan komutlarının arasına girer. Sahnenin rengini, derinliğini, kamerasını ve ışığını kendisi bulur, sonra oyunun görüntüsüne şunları ekler:
+<a href="docs/images/gallery/24-deathknell-forest-sun-rays.jpg"><img src="docs/images/gallery/24-deathknell-forest-sun-rays.jpg" alt="Sun rays through the forest at Deathknell"></a>
 
-- yeniden yazılmış **su**: yansıma, dalga, Fresnel, güneş, soğurma, kırılma, kostik, köpük;
-- **hacimsel sis ve ışık huzmeleri**;
-- **yumuşak gölgeler**, ortam kapatma (AO) ve kontakt gölgeleri;
-- ekrana tıklayıp her pikselin hangi draw, shader ve texture'dan geldiğini gösteren bir **grafik denetleyicisi** (Inspector).
+The layer never touches the game, the Wine prefix or DXVK, and installs no DLLs. It sits between DXVK and the Vulkan driver, finds the scene's color, depth, camera and lighting on its own, and then adds:
 
-Ayarların hepsi oyun içindeki **F10** menüsünden değişir ve anında görünür.
+- rewritten **water**: reflections, waves, Fresnel, sun glints, absorption, refraction, caustics and foam;
+- **volumetric fog and light shafts**;
+- **soft shadows**, ambient occlusion and contact shadows;
+- a **graphics inspector**: click anywhere on screen to see which draw, shader and texture produced that pixel.
 
-> Durum: kişisel araştırma projesi. Hedef donanım GTX 1660 Ti, 1920×1080. Bir ayrıntının oyunda mı yoksa yalnız sentetik testte mi doğrulandığı belgelerde ayrıca yazılıdır. Son güncelleme: 9 Ekim 2026.
+Every setting lives in the in-game **F10** menu and takes effect immediately.
 
-## İçindekiler
+> The project was previously called *Vulkan Depth Probe*; internal identifiers (`VK_LAYER_depth_probe`, `DEPTH_PROBE_*`, `~/.config/vulkan-depth-probe/`) still use that name.
 
-- [Galeri](#galeri)
-- [Özellikler](#özellikler)
-- [Kurulum ve çalıştırma](#kurulum-ve-çalıştırma)
-- [Kısayollar](#kısayollar)
-- [Menüler (F10)](#menüler-f10)
-- [Mimari](#mimari)
-- [Teknikler](#teknikler)
-- [Ayar dosyaları](#ayar-dosyaları)
-- [Ortam değişkenleri](#ortam-değişkenleri)
-- [Araçlar](#araçlar)
-- [Testler](#testler)
-- [Dizin yapısı](#dizin-yapısı)
-- [Belgeler](#belgeler)
-- [Bilinen kısıtlar](#bilinen-kısıtlar)
+## Contents
 
-## Galeri
+- [Gallery](#gallery)
+- [Features](#features)
+- [Building](#building)
+- [Running in WoW](#running-in-wow)
+- [Hotkeys](#hotkeys)
+- [Menus (F10)](#menus-f10)
+- [Architecture](#architecture)
+- [Techniques](#techniques)
+- [Settings files](#settings-files)
+- [Environment variables](#environment-variables)
+- [Tools](#tools)
+- [Tests](#tests)
+- [Repository layout](#repository-layout)
+- [Documentation](#documentation)
+- [Known limitations](#known-limitations)
 
-Görüntülerin hepsi gerçek oyundan alındı; varsayılan "her şey açık" ayarlarıyla. Tam boyut için görüntüye tıklayın.
+## Gallery
+
+All screenshots come from the real game with the default "everything on" settings. Click an image for full size.
+
+### Light and fog
 
 <table>
 <tr>
-<td width="50%"><a href="docs/images/gallery/01-durotar-sunset-glare-rays.jpg"><img src="docs/images/gallery/01-durotar-sunset-glare-rays.jpg" alt="Durotar gün batımı"></a><br><sub><b>Valley of Trials, gün batımı.</b> Hacimsel sis, güneş parlaması (glare) ve diskten yayılan ışık huzmeleri.</sub></td>
-<td width="50%"><a href="docs/images/gallery/02-durotar-topdown-soft-shadows.jpg"><img src="docs/images/gallery/02-durotar-topdown-soft-shadows.jpg" alt="Yukarıdan yumuşak gölgeler"></a><br><sub><b>Yukarıdan.</b> Oyunun kendi gölgeleri PCSS ile yumuşatılmış, çatlaklarda AO ve kontakt gölgeleri.</sub></td>
+<td width="50%"><a href="docs/images/gallery/23-deathknell-green-light-shafts.jpg"><img src="docs/images/gallery/23-deathknell-green-light-shafts.jpg" alt="Green light shafts at Deathknell"></a><br><sub><b>Deathknell, Tirisfal Glades.</b> Tirisfal's green sky light carried into the fog; shafts fall between the pines onto the village.</sub></td>
+<td width="50%"><a href="docs/images/gallery/01-durotar-sunset-glare-rays.jpg"><img src="docs/images/gallery/01-durotar-sunset-glare-rays.jpg" alt="Durotar sunset"></a><br><sub><b>Valley of Trials, sunset.</b> Volumetric fog, sun glare and rays streaming from the sun disc.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/images/gallery/03-durotar-sun-rays-tree.jpg"><img src="docs/images/gallery/03-durotar-sun-rays-tree.jpg" alt="Ağaçtan güneş huzmeleri"></a><br><sub><b>Ağacın arkasındaki güneş.</b> Yapraklar arasından süzülen ışınlar (sun rays) ve aureole.</sub></td>
-<td><a href="docs/images/gallery/04-booty-bay-dock-sunset-water.jpg"><img src="docs/images/gallery/04-booty-bay-dock-sunset-water.jpg" alt="Booty Bay gün batımı su"></a><br><sub><b>Booty Bay iskelesi.</b> MODERN su: gökyüzü ve kayalık yansımaları, dalgalarla kırılan güneş yolu.</sub></td>
+<td><a href="docs/images/gallery/03-durotar-sun-rays-tree.jpg"><img src="docs/images/gallery/03-durotar-sun-rays-tree.jpg" alt="Sun rays through a tree"></a><br><sub><b>Sun behind a tree.</b> Rays filtering through the leaves, plus the aureole around the disc.</sub></td>
+<td><a href="docs/images/gallery/18-durotar-rays-through-tree.jpg"><img src="docs/images/gallery/18-durotar-rays-through-tree.jpg" alt="Rays through a tree"></a><br><sub><b>Screen-space rays.</b> A ray mask marched toward the disc on screen: shafts only pass through the gaps.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/images/gallery/05-booty-bay-dock-ship-fog.jpg"><img src="docs/images/gallery/05-booty-bay-dock-ship-fog.jpg" alt="Booty Bay gemi ve sis"></a><br><sub><b>Liman.</b> Mesafeyle yoğunlaşan sis, uzaktaki gemi ve suyun rengi.</sub></td>
-<td><a href="docs/images/gallery/06-booty-bay-ship-sun-glare.jpg"><img src="docs/images/gallery/06-booty-bay-ship-sun-glare.jpg" alt="Güneşe karşı"></a><br><sub><b>Güneşe karşı.</b> Glare ve ileri saçılım (Henyey–Greenstein) sisi ışıkla dolduruyor; otomatik pozlama ekranı yakmıyor.</sub></td>
+<td><a href="docs/images/gallery/06-booty-bay-ship-sun-glare.jpg"><img src="docs/images/gallery/06-booty-bay-ship-sun-glare.jpg" alt="Facing the sun"></a><br><sub><b>Facing the sun.</b> Glare and forward scattering (Henyey–Greenstein) fill the fog with light; auto exposure keeps the screen from blowing out.</sub></td>
+<td><a href="docs/images/gallery/16-mulgore-sun-glare-totem.jpg"><img src="docs/images/gallery/16-mulgore-sun-glare-totem.jpg" alt="Totem and sun"></a><br><sub><b>Camp Narache.</b> A totem in front of the sun disc: glare scales with the visible part of the disc, light spills around the edges.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/images/gallery/07-booty-bay-morning-mist.jpg"><img src="docs/images/gallery/07-booty-bay-morning-mist.jpg" alt="Sabah sisi"></a><br><sub><b>Sabah sisi.</b> Zemine bağlı sis koyun üstünde; su yüzeyinde duruyor, deniz tabanına inmiyor.</sub></td>
-<td><a href="docs/images/gallery/08-booty-bay-swimming-shallow-water.jpg"><img src="docs/images/gallery/08-booty-bay-swimming-shallow-water.jpg" alt="Yüzerken"></a><br><sub><b>Yüzerken.</b> Sığ suda taban görünüyor; Beer–Lambert soğurmasıyla derinleştikçe renk değişiyor.</sub></td>
+<td><a href="docs/images/gallery/10-booty-bay-town-light-shafts.jpg"><img src="docs/images/gallery/10-booty-bay-town-light-shafts.jpg" alt="Light shafts over the town"></a><br><sub><b>Above Booty Bay.</b> Sun shafts falling into the fog between buildings, from the sun map and a per-froxel shadow march.</sub></td>
+<td><a href="docs/images/gallery/11-booty-bay-pink-morning-haze.jpg"><img src="docs/images/gallery/11-booty-bay-pink-morning-haze.jpg" alt="Pink morning haze"></a><br><sub><b>Pink morning haze.</b> The fog's ambient color is read from the game's own light block (zone and time of day).</sub></td>
 </tr>
 <tr>
-<td><a href="docs/images/gallery/09-booty-bay-under-docks-reflections.jpg"><img src="docs/images/gallery/09-booty-bay-under-docks-reflections.jpg" alt="İskele altı"></a><br><sub><b>İskele altı.</b> Direklerin ekran-uzayı yansımaları (SSR) ve oyunun dokusundan arındırılmış su rengi.</sub></td>
-<td><a href="docs/images/gallery/10-booty-bay-town-light-shafts.jpg"><img src="docs/images/gallery/10-booty-bay-town-light-shafts.jpg" alt="Kasaba üstünde huzmeler"></a><br><sub><b>Kasabanın üstü.</b> Binaların arasından sise düşen güneş huzmeleri; güneş haritası ve gölge yürüyüşü.</sub></td>
+<td><a href="docs/images/gallery/12-shadowglen-violet-fog.jpg"><img src="docs/images/gallery/12-shadowglen-violet-fog.jpg" alt="Violet fog in Shadowglen"></a><br><sub><b>Shadowglen.</b> Teldrassil's violet light flows into the fog, giving depth between the tree trunks.</sub></td>
+<td><a href="docs/images/gallery/14-teldrassil-pond-haze.jpg"><img src="docs/images/gallery/14-teldrassil-pond-haze.jpg" alt="Teldrassil haze"></a><br><sub><b>Aldrassil pond, another angle.</b> Temporal reprojection keeps the fog from flickering while the camera turns.</sub></td>
 </tr>
 <tr>
-<td><a href="docs/images/gallery/11-booty-bay-pink-morning-haze.jpg"><img src="docs/images/gallery/11-booty-bay-pink-morning-haze.jpg" alt="Pembe pus"></a><br><sub><b>Pembe sabah pusu.</b> Sisin ortam rengi oyunun kendi ışık bloğundan (bölge, günün saati) okunuyor.</sub></td>
-<td><a href="docs/images/gallery/12-shadowglen-violet-fog.jpg"><img src="docs/images/gallery/12-shadowglen-violet-fog.jpg" alt="Shadowglen mor sis"></a><br><sub><b>Shadowglen.</b> Teldrassil'in mor ışığı sise geçiyor; ağaç gövdelerinin arasında derinlik.</sub></td>
-</tr>
-<tr>
-<td><a href="docs/images/gallery/13-teldrassil-pond-fog.jpg"><img src="docs/images/gallery/13-teldrassil-pond-fog.jpg" alt="Teldrassil göleti"></a><br><sub><b>Aldrassil göleti.</b> Göl yüzeyinde su yansıması, üstünde dünyaya sabitlenmiş sis gürültüsü.</sub></td>
-<td><a href="docs/images/gallery/14-teldrassil-pond-haze.jpg"><img src="docs/images/gallery/14-teldrassil-pond-haze.jpg" alt="Teldrassil pusu"></a><br><sub><b>Aynı göl, başka açı.</b> Temporal reprojection sayesinde kamera dönerken titremeyen sis.</sub></td>
-</tr>
-<tr>
-<td><a href="docs/images/gallery/15-mulgore-misty-morning.jpg"><img src="docs/images/gallery/15-mulgore-misty-morning.jpg" alt="Mulgore sisli sabah"></a><br><sub><b>Mulgore, Red Cloud Mesa.</b> Sisli sabah; totemler mesafeyle soluyor, çimen yumuşak gölgede.</sub></td>
-<td><a href="docs/images/gallery/16-mulgore-sun-glare-totem.jpg"><img src="docs/images/gallery/16-mulgore-sun-glare-totem.jpg" alt="Totem ve güneş"></a><br><sub><b>Camp Narache.</b> Güneş diskinin önündeki totem: diskin görünen payı kadar glare, kenarlardan taşan ışık.</sub></td>
-</tr>
-<tr>
-<td><a href="docs/images/gallery/17-durotar-morning-haze.jpg"><img src="docs/images/gallery/17-durotar-morning-haze.jpg" alt="Durotar sabah pusu"></a><br><sub><b>Durotar, sabah.</b> Hafif yükseklik sisi; uzak kayalıklar açık havanın rengine geçiyor.</sub></td>
-<td><a href="docs/images/gallery/18-durotar-rays-through-tree.jpg"><img src="docs/images/gallery/18-durotar-rays-through-tree.jpg" alt="Ağaçtan ışınlar"></a><br><sub><b>Ağacın arkasındaki güneş.</b> Ekran-uzayında diske doğru yürüyen ışın maskesi: yalnız açıklıklardan geçen huzmeler.</sub></td>
-</tr>
-<tr>
-<td><a href="docs/images/gallery/19-the-den-torches-point-shadows.jpg"><img src="docs/images/gallery/19-the-den-torches-point-shadows.jpg" alt="The Den meşaleler"></a><br><sub><b>The Den (mağara).</b> Meşaleler oyunun model shader sabitlerinden bulunuyor; her birinden nokta ışık gölgesi.</sub></td>
-<td><a href="docs/images/gallery/20-the-den-topdown-torches.jpg"><img src="docs/images/gallery/20-the-den-topdown-torches.jpg" alt="The Den yukarıdan"></a><br><sub><b>Mağara, yukarıdan.</b> İç mekân gölge haritası ve meşale gölgeleri; köşelerde AO.</sub></td>
-</tr>
-<tr>
-<td><a href="docs/images/gallery/21-durotar-topdown-contact-shadows.jpg"><img src="docs/images/gallery/21-durotar-topdown-contact-shadows.jpg" alt="Kontakt gölgeler"></a><br><sub><b>Kontakt gölgeleri.</b> Oyunun 2048'lik gölge haritalarının kaçırdığı küçük ayrıntılar (çatlaklar, ayaklar) için kısa ekran-uzayı yürüyüşü.</sub></td>
-<td><a href="docs/images/gallery/22-durotar-topdown-npc-shadows.jpg"><img src="docs/images/gallery/22-durotar-topdown-npc-shadows.jpg" alt="NPC gölgeleri"></a><br><sub><b>Gölge yumuşaması.</b> Gölge, onu düşüren nesneden uzaklaştıkça genişliyor (PCSS penumbra) ve soluyor.</sub></td>
+<td><a href="docs/images/gallery/15-mulgore-misty-morning.jpg"><img src="docs/images/gallery/15-mulgore-misty-morning.jpg" alt="Misty morning in Mulgore"></a><br><sub><b>Mulgore, Red Cloud Mesa.</b> Misty morning: totems fade with distance, the grass sits in soft shadow.</sub></td>
+<td><a href="docs/images/gallery/17-durotar-morning-haze.jpg"><img src="docs/images/gallery/17-durotar-morning-haze.jpg" alt="Durotar morning haze"></a><br><sub><b>Durotar, morning.</b> Light height fog; distant cliffs blend into the color of the open sky.</sub></td>
 </tr>
 </table>
 
-## Özellikler
+### Water
 
-### Su ([docs/water.md](docs/water.md))
+<table>
+<tr>
+<td width="50%"><a href="docs/images/gallery/04-booty-bay-dock-sunset-water.jpg"><img src="docs/images/gallery/04-booty-bay-dock-sunset-water.jpg" alt="Booty Bay sunset water"></a><br><sub><b>Booty Bay docks.</b> MODERN water: sky and cliff reflections, a sun path broken up by the waves.</sub></td>
+<td width="50%"><a href="docs/images/gallery/05-booty-bay-dock-ship-fog.jpg"><img src="docs/images/gallery/05-booty-bay-dock-ship-fog.jpg" alt="Booty Bay ship and fog"></a><br><sub><b>The harbor.</b> Fog thickening with distance, the ship far out, and the water's own color.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/images/gallery/08-booty-bay-swimming-shallow-water.jpg"><img src="docs/images/gallery/08-booty-bay-swimming-shallow-water.jpg" alt="Swimming"></a><br><sub><b>Swimming.</b> The seabed shows through shallow water; Beer–Lambert absorption shifts the color as it deepens.</sub></td>
+<td><a href="docs/images/gallery/09-booty-bay-under-docks-reflections.jpg"><img src="docs/images/gallery/09-booty-bay-under-docks-reflections.jpg" alt="Under the docks"></a><br><sub><b>Under the docks.</b> Screen-space reflections (SSR) of the pilings, and a water color freed from the game's scrolling texture.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/images/gallery/07-booty-bay-morning-mist.jpg"><img src="docs/images/gallery/07-booty-bay-morning-mist.jpg" alt="Morning mist"></a><br><sub><b>Morning mist.</b> Ground-anchored fog over the bay rests on the water surface instead of sinking to the seabed.</sub></td>
+<td><a href="docs/images/gallery/13-teldrassil-pond-fog.jpg"><img src="docs/images/gallery/13-teldrassil-pond-fog.jpg" alt="Teldrassil pond"></a><br><sub><b>Aldrassil pond.</b> Reflections on the pond, with world-anchored fog noise drifting above it.</sub></td>
+</tr>
+</table>
 
-WoW 3.3.5a'nın suyu düz bir çokgen, üstünde kayan bir doku ve sabit bir alfa. Katman, oyunun su draw'larını kendi gizli geçişlerinde yeniden oynatıyor ve suyu baştan hesaplıyor. Oyunun su shader'ı tanınıyor; aynı dönüşümü kullanan vertex shader varyantları da.
+### Shadows
 
-- **Yansımalar:** iki mod var.
-  - **SSR:** ekran-uzayında, eşit piksel adımlı yürüyüş.
-  - **Planar:** aynı pass'in opak draw'ları aynalanmış kamerayla yeniden çiziliyor.
-  - İkisi de tutmazsa kalıcı bir **gökyüzü belleğine** (ekranda görülen gökyüzünün yön haritası) düşülüyor.
-  - Birden fazla yatay su seviyesi destekleniyor (ör. Shadowglen'deki iki gölet).
-- **Dalgalı yüzey:**
-  - Beş Gerstner dalgası, piksel başına ışın–yüzey kesişimiyle hesaplanıyor (Newton, 3 adım). WoW'un su ağı vertex ötelemesi için fazla seyrek.
-  - Normaller aynı yüzeyden geliyor; dalga fazları host'ta double hassasiyetle tutuluyor.
-- **MODERN stil** (A/B için **CLASSIC** de duruyor):
-  - çok ölçekli normaller (oktavlı orta dalgacıklar ve mikro dalgacıklar);
-  - pürüzlülüğe duyarlı Schlick Fresnel, GGX güneş lobu ve seyrek parıltılar;
-  - parlak ucu HDR'ye genişletilmiş yansıma;
-  - kanal başına Beer–Lambert soğurması;
-  - dalga tepelerinde alt-yüzey ışığı (SSS);
-  - sızıntıya karşı korumalı kırılma;
-  - güneş yönünde projekte edilen renk ayrışmalı kostikler;
-  - Jacobian'dan whitecap'ler ve kıyı köpüğü.
-- **Oyunun dokusu yok:** su gövdesinin rengi, oyunun su renginin mip zincirinden yaklaşık 6 yardlık alanın ortalaması olarak okunuyor. Bölge tonu ve günün saati kalıyor, kayan doku deseni gidiyor.
-- **Taban:** oyunun alfa karışımı geri alınarak (`S = (sahne − a·W)/(1 − a)`) suyun altındaki gerçek zemin kurtarılıyor; sığ su berrak görünüyor.
-- **Doğruluk korumaları:**
-  - Derinlik testi oyununkiyle birebir (D24, `LESS_OR_EQUAL`): kıyı çizgisinde artefakt yok.
-  - Oyunun su çizmediği pikseller oyunun çizdiği gibi kalıyor.
-  - Suyun üstüne sonradan çizilen efektler (balık sürüleri, parçacıklar) bekletilip su hesaplandıktan sonra üstüne çiziliyor.
-- **Dokular:** özgün ve üretilmiş. Dalgacık dokusu, Crest'in normal haritasının **ölçülmüş** spektrumundan yeni fazlarla sentezleniyor; köpük prosedürel, kostikler simüle ediliyor. Hiçbir üçüncü taraf görseli repoda yok.
-- **22 hata ayıklama görünümü:** maske, normal, derinlik, yansıma, yer değiştirme, Fresnel, pürüzlülük, SSR güveni, soğurma, kırılma, kostik, ton…
+<table>
+<tr>
+<td width="50%"><a href="docs/images/gallery/02-durotar-topdown-soft-shadows.jpg"><img src="docs/images/gallery/02-durotar-topdown-soft-shadows.jpg" alt="Soft shadows from above"></a><br><sub><b>From above.</b> The game's own shadows softened with PCSS; AO and contact shadows in the cracks.</sub></td>
+<td width="50%"><a href="docs/images/gallery/22-durotar-topdown-npc-shadows.jpg"><img src="docs/images/gallery/22-durotar-topdown-npc-shadows.jpg" alt="NPC shadows"></a><br><sub><b>Shadow softening.</b> A shadow widens (PCSS penumbra) and fades as it gets farther from its caster.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/images/gallery/21-durotar-topdown-contact-shadows.jpg"><img src="docs/images/gallery/21-durotar-topdown-contact-shadows.jpg" alt="Contact shadows"></a><br><sub><b>Contact shadows.</b> A short screen-space march for the small details (cracks, feet) that the game's 2048² shadow maps miss.</sub></td>
+<td><a href="docs/images/gallery/19-the-den-torches-point-shadows.jpg"><img src="docs/images/gallery/19-the-den-torches-point-shadows.jpg" alt="Torches in The Den"></a><br><sub><b>The Den (cave).</b> Torches are found from the game's model shader constants; each one casts point-light shadows.</sub></td>
+</tr>
+<tr>
+<td><a href="docs/images/gallery/20-the-den-topdown-torches.jpg"><img src="docs/images/gallery/20-the-den-topdown-torches.jpg" alt="The Den from above"></a><br><sub><b>The cave from above.</b> Indoor shadow map and torch shadows; AO in the corners.</sub></td>
+<td></td>
+</tr>
+</table>
 
-### Hacimsel sis ve ışık ([docs/fog.md](docs/fog.md))
+## Features
 
-- **Froxel sis:**
-  - Kameraya hizalı 3D ızgara (MEDIUM: 160×90×64), üstel dağıtılmış dilimler.
-  - Yükseklikle azalan yoğunluk; zemine, kameraya ya da sabit dünya yüksekliğine bağlanabiliyor.
-  - Dünyaya sabitlenmiş gürültü ve rüzgârla kayma.
-- **Güneş ve hava:**
-  - Güneş yönü, rengi ve ortam ışığı **WoW'un belleğinden** okunuyor (ışık bloğu, gökyüzü diski, hava durumu).
-  - Yağmurda güneş bulutların arkasında kalıyor.
-- **Huzmeler:**
-  - Güneş gölgeleri, kalıcı bir yükseklik belleği ve güneş haritası üzerinden froxel başına yürüyüşle hesaplanıyor.
-  - İsteğe bağlı olarak oyunun kendi 4 gölge kaskadı kullanılabiliyor.
-- **Görsel ekler:**
-  - Aureole (dar ileri saçılım lobu).
-  - Görünen disk payına göre glare.
-  - Disk çevresinden yayılan ekran-uzayı ışınları.
-  - Işık tavanı, opaklık tavanı ve otomatik pozlama.
-- **Kararlılık:** temporal reprojection (Halton jitter). Hareket sırasında geçmişin ağırlığı azalıyor, sahne kesildiğinde sıfırlanıyor.
-- **Doğru ekleme noktası:** sis, dünya pass'leri bitince ve UI çizilmeden önce eklenir, yani UI sislenmez. Su yüzeyinde durur. Parçacıklar isteğe bağlı olarak sisten sonra çizilir (`transparent_fog`).
+### Water ([docs/water.md](docs/water.md))
 
-### Gölgeler ve sahne gölgelendirmesi
+WoW 3.3.5a water is a flat polygon with a scrolling texture and a fixed alpha. The layer replays the game's water draws in its own hidden passes and computes the water from scratch. It recognizes the game's water shader, including vertex shader variants that use the same transform.
 
-- **Yumuşak oyun gölgeleri:**
-  - WoW'un piksel shader'larındaki her gölge örneği, pipeline oluşturulurken SPIR-V düzeyinde **PCSS**'e yeniden yazılıyor: blocker araması ve nesneden uzaklaştıkça büyüyen penumbra.
-  - Gölge, nesneden uzaklaştıkça soluyor.
-  - İç mekân gölge haritasının gücü ayarlanabiliyor.
-- **Gölge kenarı:** oyunun 9 örnekli PCF yayılımı, piksel sabitlerinden genişletiliyor.
-- **Sahne gölgelendirmesi** (sisten önce, yarım çözünürlükte):
+- **Reflections**, two modes:
+  - **SSR:** a screen-space march with equal pixel steps.
+  - **Planar:** the pass's opaque draws are redrawn with a mirrored camera.
+  - When neither hits, a persistent **sky memory** (a direction map of the sky seen on screen) is used.
+  - Several horizontal water levels are supported (e.g. the two ponds in Shadowglen).
+- **Wavy surface:**
+  - Five Gerstner waves, solved per pixel with a ray–surface intersection (Newton, 3 steps). WoW's water mesh is too sparse for vertex displacement.
+  - Normals come from the same surface; wave phases are kept in double precision on the host.
+- **MODERN style** (**CLASSIC** is kept for A/B comparison):
+  - multi-scale normals (octaved medium ripples and micro ripples);
+  - roughness-aware Schlick Fresnel, a GGX sun lobe and sparse glints;
+  - reflections with the bright end extended to HDR;
+  - per-channel Beer–Lambert absorption;
+  - subsurface light (SSS) on wave crests;
+  - leak-protected refraction;
+  - dispersive caustics projected along the sun direction;
+  - whitecaps from the Jacobian, plus shore foam.
+- **No game texture:** the body color is read from the mip chain of the game's water color as an average over roughly 6 yards. Zone tint and time of day stay; the scrolling texture pattern goes.
+- **Seabed:** undoing the game's alpha blend (`S = (scene − a·W)/(1 − a)`) recovers the real ground under the water, so shallow water looks clear.
+- **Correctness guards:**
+  - The depth test matches the game's exactly (D24, `LESS_OR_EQUAL`), so there are no artifacts along the shoreline.
+  - Pixels where the game drew no water stay exactly as the game drew them.
+  - Effects the game draws over the water afterwards (fish schools, particles) are held back and redrawn on top once the water is done.
+- **Textures:** original and generated. The ripple texture is synthesized with new phases from the **measured** spectrum of Crest's normal map; foam is procedural and caustics are simulated. No third-party images are in the repository.
+- **22 debug views:** mask, normals, depth, reflection, displacement, Fresnel, roughness, SSR confidence, absorption, refraction, caustics, tint, and more.
+
+### Volumetric fog and light ([docs/fog.md](docs/fog.md))
+
+- **Froxel fog:**
+  - A camera-aligned 3D grid (MEDIUM: 160×90×64) with exponentially distributed slices.
+  - Density falls off with height and can be anchored to the ground, the camera or a fixed world height.
+  - World-anchored noise drifting with the wind.
+- **Sun and weather:**
+  - Sun direction, sun color and ambient light are read **from WoW's process memory** (light block, sky disc, weather).
+  - In rain the sun stays behind the clouds.
+- **Light shafts:**
+  - Sun shadows are computed by a per-froxel march over a persistent height memory and a sun map.
+  - Optionally, the game's own 4 shadow cascades can be used.
+- **Visual extras:**
+  - Aureole (a narrow forward-scattering lobe).
+  - Glare scaled by the visible part of the disc.
+  - Screen-space rays radiating from around the disc.
+  - Light ceiling, opacity ceiling and auto exposure.
+- **Stability:** temporal reprojection (Halton jitter). History weight drops during motion and resets on scene cuts.
+- **Correct insertion point:** fog is applied after the world passes and before the UI, so the UI is never fogged. It stops at the water surface. Particles can optionally be drawn after the fog (`transparent_fog`).
+
+### Shadows and scene shading
+
+- **Soft game shadows:**
+  - Every shadow lookup in WoW's pixel shaders is rewritten into **PCSS** at the SPIR-V level when the pipeline is created: a blocker search plus a penumbra that grows with distance from the caster.
+  - Shadows fade as they get farther from the caster.
+  - Indoor shadow map strength is adjustable.
+- **Shadow edges:** the game's 9-tap PCF spread is widened through its pixel constants.
+- **Scene shading** (before the fog, at half resolution):
   - ambient occlusion;
-  - kontakt gölgeleri (ekran-uzayında güneşe kısa yürüyüş);
-  - arazi gölgeleri (100 yardlık yürüyüş; oyunun kaskadlarına girmeyen tepeler);
-  - meşale ve ateşlerden **nokta ışık gölgeleri**.
-- **Oyunun ışıkları:** nokta ışıklar, WoW'un model vertex shader sabitlerinden okunuyor (konum, renk, menzil) ve isteğe bağlı olarak gizmo olarak çiziliyor ([docs/lights.md](docs/lights.md)).
-- **Oyunun mesafe sisi:** vertex sabitlerindeki fog register'ı yeniden yazılarak uzatılıyor ya da kapatılıyor.
+  - contact shadows (a short screen-space march toward the sun);
+  - terrain shadows (a 100-yard march for hills that fall outside the game's cascades);
+  - **point-light shadows** from torches and fires.
+- **Game lights:** point lights are read from WoW's model vertex shader constants (position, color, range) and can optionally be drawn as gizmos ([docs/lights.md](docs/lights.md)).
+- **Game distance fog:** the fog register in the vertex constants is rewritten to push the fog farther out or turn it off.
 
-### Inspector ve keşif ([docs/inspector.md](docs/inspector.md))
+### Inspector and discovery ([docs/inspector.md](docs/inspector.md))
 
-- **Yüzey seçme:** ekrandaki bir yüzeye tıklanınca onu çizen draw bulunuyor. GPU kapsama testiyle "sonraki/önceki GPU isabeti" arasında gezilebiliyor; seçilen draw sarıya boyanıyor.
-- **Ayrıntılar:** shader'lar, texture'lar (format, mip, sampler), vertex/index buffer'ları ve uniform değerleri.
-- **Dışa aktarma:** texture'ları BMP olarak (BC sıkıştırması GPU'da çözülüyor), shader'ları SPIR-V olarak ve bir manifest.
-- **Pipeline explorer ve izolasyon:** bir draw'ı gizle, yalnız onu göster, geri getir.
-- **Kare taramaları:** bütün bir kareyi açıklayan sıralı raporlar (pass'ler, draw sınıfları, alfa testi, gölge haritaları).
-- **Semantik draw sınıfları:** SKY, OPAQUE, ALPHA_TEST, WATER, TRANSPARENT, ADDITIVE, UI ([docs/draw-classes.md](docs/draw-classes.md)).
+- **Surface picking:** click a surface on screen to find the draw that produced it. A GPU coverage test lets you step through "next / previous GPU hit"; the selected draw is tinted yellow.
+- **Details:** shaders, textures (format, mips, sampler), vertex/index buffers and uniform values.
+- **Export:** textures as BMP (BC compression is decoded on the GPU), shaders as SPIR-V, plus a manifest.
+- **Pipeline explorer and isolation:** hide a draw, show only that draw, bring it back.
+- **Frame scans:** ranked reports that explain an entire frame (passes, draw classes, alpha testing, shadow maps).
+- **Semantic draw classes:** SKY, OPAQUE, ALPHA_TEST, WATER, TRANSPARENT, ADDITIVE, UI ([docs/draw-classes.md](docs/draw-classes.md)).
 
-### Kamera ve sahne hata ayıklayıcı
+### Camera and scene debugger
 
-- WoW'un `CGCamera` yapısı süreç belleğinden okunuyor (kanonik poz, FOV, near/far). Su shader'ının kamera sabitleriyle çapraz doğrulanıyor.
-- Derinlikten dünya konumu rekonstrüksiyonu ve görünümleri (Shift+F6).
-- Kamera telemetri HUD'u, kayıt, işaretleyiciler, 3D gizmolar.
-- Kamera adaylarını kanıtıyla sıralayan **Scene Debugger** sayfası.
+- WoW's `CGCamera` structure is read from process memory (canonical pose, FOV, near/far) and cross-checked against the water shader's camera constants.
+- World-position reconstruction from depth, with debug views (Shift+F6).
+- Camera telemetry HUD, recording, markers and 3D gizmos.
+- A **Scene Debugger** page that ranks camera candidates and shows the evidence for each.
 
-### Eski efektler ([docs/postfx.md](docs/postfx.md))
+### Legacy effects ([docs/postfx.md](docs/postfx.md))
 
-Projenin ilk aşamasından kalan tam ekran efektler. Demo olarak duruyorlar ve varsayılan kapalılar: rainbow/heartbeat, legacy AO, SSAO, sharpen, kromatik sapma, kontur, genel SSR.
+Full-screen effects from the project's first phase. They are kept as demos and are off by default: rainbow/heartbeat, legacy AO, SSAO, sharpen, chromatic aberration, outline, generic SSR.
 
-## Kurulum ve çalıştırma
+## Building
 
-### Gereksinimler
+### Requirements
 
-- Linux, Steam + Proton (DXVK). Geliştirme Nobara/Fedora üzerinde yapıldı.
-- 32-bit Vulkan sürücüsü (oyun 32-bit). Test donanımı NVIDIA GTX 1660 Ti.
-- `cmake`, `ninja`, 32-bit g++ (`-m32`) ve `glslc` (shaderc).
-- `python3` + `numpy` (dokular üretiliyor), araçlar için `Pillow` ve `scipy`.
+- Linux with Steam + Proton (DXVK). Developed on Nobara/Fedora.
+- A 32-bit Vulkan driver (the game is 32-bit). Tested on an NVIDIA GTX 1660 Ti.
+- `cmake`, `ninja`, a 32-bit capable g++ (`-m32`) and `glslc` (shaderc).
+- `python3` + `numpy` (to generate textures); `Pillow` and `scipy` for the tools.
 
-### Derleme
+### Build
 
 ```bash
 cmake -S . -B build32 -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-m32 -DCMAKE_SHARED_LINKER_FLAGS=-m32 -DDEPTH_PROBE_BUILD_TESTS=ON
-cmake --build build32          # 32-bit katman: build32/libVkLayer_depth_probe.so
-./tools/build-shaders.sh       # GLSL -> SPIR-V (CMake bunu yapmaz)
+cmake --build build32          # 32-bit layer: build32/libVkLayer_depth_probe.so
+./tools/build-shaders.sh       # GLSL -> SPIR-V (CMake does not do this)
 ```
 
-Shader'lar çalışma anında `shaders/` dizininden okunur. Bir `.frag`/`.comp` değişikliği `build-shaders.sh` çalışana kadar etkisizdir. Katman ya da shader arayüzü değişince oyunu tamamen kapatıp yeniden açın.
+Shaders are loaded from `shaders/` at runtime. A change to a `.frag`/`.comp` file has no effect until `build-shaders.sh` runs. After changing the layer or a shader interface, quit the game completely and start it again.
 
-### Oyunu başlatma
+## Running in WoW
 
-Steam → WoW → Properties → Launch Options:
+Nothing is installed into the game or the Wine prefix. The layer is enabled only for the process started through `tools/run-inspector.sh`, so removing the launch option fully turns it off.
+
+### 1. Build once
+
+Follow [Build](#build) above. The launcher refuses to start if `build32/libVkLayer_depth_probe.so` or any compiled shader (`shaders/*.spv`) is missing, and tells you which command to run.
+
+### 2. Prepare the game client
+
+- WoW must render through **Direct3D 9**, which Proton translates with DXVK. This is the 3.3.5a default; if you changed it, set `SET gxApi "d3d9"` in `WTF/Config.wtf`.
+- Set **Multisampling to 1** (Video options, or `SET gxMultisample "1"` in `Config.wtf`). The layer needs a single-sample depth buffer.
+- Fullscreen or windowed both work.
+
+### 3. Add the launcher to Steam
+
+If WoW is not in Steam yet, add `Wow.exe` with **Games → Add a Non-Steam Game to My Library**, then under **Properties → Compatibility** force a Proton version.
+
+Then open **Properties → General → Launch Options** and enter:
 
 ```text
-/mnt/Games/Projects/vulkan-depth-probe/tools/run-inspector.sh %command%
+/path/to/wow-vulkan-probe/tools/run-inspector.sh %command%
 ```
 
-Başlatıcı şunları yapar:
+Steam replaces `%command%` with the full Proton command line, and the launcher runs it with the layer enabled.
 
-- `build32` katmanını yükler.
-- Eksikse su dokularını üretir (`water_detail.bin`, `water_modern.bin`).
-- Inspector'ı açar ve sisi açık başlatır (`DEPTH_PROBE_FOG_START=1`).
-- DXVK descriptor buffer'larını kapatır (Inspector descriptor set'leri çözer).
-- Logu `~/vulkan-depth-probe.log` dosyasına yazar.
+<details>
+<summary>Other launchers (Lutris, plain Wine/Proton)</summary>
 
-Oyunda multisampling **1** olmalı.
+The launcher is a plain prefix: it sets environment variables and then `exec`s whatever command follows it.
 
-İlk çalıştırmada su yansıması WoW su profiliyle kendiliğinden açılır. Ayarlar `~/.config/vulkan-depth-probe/` altında saklanır.
+- **Lutris:** game → Configure → System options → **Command prefix**: `/path/to/wow-vulkan-probe/tools/run-inspector.sh`. The runner must use DXVK.
+- **Command line:** `/path/to/wow-vulkan-probe/tools/run-inspector.sh wine /path/to/Wow.exe` (DXVK installed in that prefix).
 
-## Kısayollar
+</details>
 
-| Tuş | İş |
+### 4. Start the game and check that it is active
+
+- Press **F10** in game: the *GRAPHICS INSPECTOR* menu should open. Fog, soft shadows, scene shading and water are all on by default.
+- The layer logs to `~/vulkan-depth-probe.log`. If the menu does not appear, look there first: when a requirement is not met (see [Known limitations](#known-limitations)) the layer passes frames through unchanged and logs why.
+- After rebuilding the layer or changing a shader interface, **quit the game completely** and start it again. Reloading the UI is not enough.
+
+### What the launcher does
+
+- adds `build32` to the Vulkan layer search path and enables `VK_LAYER_depth_probe`;
+- generates the water textures if missing (`water_detail.bin`, `water_modern.bin`; needs `python3` + `numpy`);
+- enables the Inspector and starts with fog on (`DEPTH_PROBE_FOG_START=1`);
+- disables DXVK descriptor buffers (the Inspector decodes descriptor sets), keeping your other `DXVK_CONFIG` options;
+- writes the log to `~/vulkan-depth-probe.log` and captures to `exports/`.
+
+On first run, water reflections turn on automatically with the WoW water profile. Settings are stored in `~/.config/vulkan-depth-probe/`. Any [environment variable](#environment-variables) can be set before the launcher in the launch options, e.g. `DEPTH_PROBE_FOG_START=0 /path/to/.../run-inspector.sh %command%`.
+
+To turn everything off, clear the launch option.
+
+## Hotkeys
+
+| Key | Action |
 | --- | --- |
-| **F10** | Menüyü aç/kapat (açıkken klavye ve fare oyundan alınır) |
-| **Shift+F5** | Hacimsel sis: KAPALI → FINAL → FROXEL DENSITY → EXTINCTION → LIGHTING → INTEGRATED SCATTERING → TRANSMITTANCE → SUN VISIBILITY |
-| **Shift+F6** | Derinlik → dünya rekonstrüksiyon görünümleri |
-| **F9** / **Shift+F9** | Kamera telemetri HUD'u / kayıt başlat-durdur |
-| **F8** / **Shift+F8** | Kamera gizmosu / gizmo kamera kaynağı (AUTO, WATER, MEMORY) |
-| **F7** / **Shift+F7** | Gizmoyu sabitle / bellek kamerası taraması |
-| **F6**, **Ctrl+1..9** | Kayda işaretleyici |
+| **F10** | Open/close the menu (keyboard and mouse are taken from the game while it is open) |
+| **Shift+F5** | Volumetric fog: OFF → FINAL → FROXEL DENSITY → EXTINCTION → LIGHTING → INTEGRATED SCATTERING → TRANSMITTANCE → SUN VISIBILITY |
+| **Shift+F6** | Depth → world reconstruction views |
+| **F9** / **Shift+F9** | Camera telemetry HUD / start-stop recording |
+| **F8** / **Shift+F8** | Camera gizmo / gizmo camera source (AUTO, WATER, MEMORY) |
+| **F7** / **Shift+F7** | Pin gizmo / memory camera scan |
+| **F6**, **Ctrl+1..9** | Add a marker to the recording |
 
-Kısayollar pasif tuş yoklamasıyla okunur ve F10 kapalıyken de çalışır. KDE'nin yakaladığı Ctrl+F tuşları bilinçli olarak kullanılmıyor.
+Hotkeys are read by passive key polling and work while the F10 menu is closed. Ctrl+F-key combinations are deliberately avoided because KDE captures them.
 
-## Menüler (F10)
+## Menus (F10)
 
-Menü, katmanın kendi çizdiği küçük bir paneldir (ImGui yok; font shader'ın içinde gömülü). Satırlara fareyle tıklanır. Her tıklama değeri bir sonraki adıma geçirir ve ayar dosyasına anında kaydeder.
+The menu is a small panel the layer draws itself (no ImGui; the font is embedded in the shader). Click a row with the mouse: each click advances the value to its next step and saves it to the settings file immediately.
 
-### Ana sayfa — *GRAPHICS INSPECTOR*
+### Main page: *GRAPHICS INSPECTOR*
 
-| Satır | Açtığı sayfa |
+| Row | Opens |
 | --- | --- |
-| INSPECT SURFACE | Dünyaya tıklayıp yüzey seçme modu |
-| SELECTED SURFACE | Seçili draw'ın özeti, GPU isabetleri arasında gezinme |
-| EXPORT SELECTED ASSETS | Texture (BMP), shader (SPIR-V) ve manifest dışa aktarımı |
-| ADVANCED – PIPELINE EXPLORER / SETTINGS | Pipeline gezgini, izolasyon, eski FX ayarları |
-| SCENE DEBUGGER – RANKED FINDINGS | Kamera, derinlik ve su kamerası bulguları, kamera adayları |
-| SHADOWS AND OCCLUSION | Gölge ve AO sayfası |
-| WATER REFLECTIONS – SSR / PLANAR | Su sayfası |
-| VOLUMETRIC FOG | Sis sayfası |
+| INSPECT SURFACE | Surface picking mode: click on the world |
+| SELECTED SURFACE | Summary of the selected draw, stepping through GPU hits |
+| EXPORT SELECTED ASSETS | Texture (BMP), shader (SPIR-V) and manifest export |
+| ADVANCED – PIPELINE EXPLORER / SETTINGS | Pipeline explorer, isolation, legacy FX settings |
+| SCENE DEBUGGER – RANKED FINDINGS | Camera, depth and water camera findings; camera candidates |
+| SHADOWS AND OCCLUSION | Shadows and AO page |
+| WATER REFLECTIONS – SSR / PLANAR | Water page |
+| VOLUMETRIC FOG | Fog page |
 
 ### Selected Surface / Textures / Shaders / Export
 
 - **Selected Surface:**
-  - ekran konumu, derinlik, VS/FS kimlikleri;
-  - malzeme ve mesh adayları;
-  - etkin durum (depth write, blend, cull, topology), hedef boyutu, texture sayısı, vertex/index buffer'ları;
-  - `NEXT GPU HIT` / `PREVIOUS GPU HIT`: aynı pikseli kapsayan draw'lar, çizim sırasıyla.
-- **Textures:** set/binding/element, image/view kimliği, format, boyut, mip/layer, sampler filtreleri ve adresleme.
-- **Shaders:** VS ve FS'nin SPIR-V anlık görüntüleri (modül yok edilse de saklanır).
-- **Export:** seçili texture'ı ya da hepsini dışa aktarır. Dosya adları set/binding/kimlik içerir; manifest kaydedilenleri ve kaydedilemeyenleri listeler.
+  - screen position, depth, VS/FS identities;
+  - material and mesh candidates;
+  - active state (depth write, blend, cull, topology), target size, texture count, vertex/index buffers;
+  - `NEXT GPU HIT` / `PREVIOUS GPU HIT`: the draws covering the same pixel, in draw order.
+- **Textures:** set/binding/element, image/view identity, format, size, mips/layers, sampler filters and addressing.
+- **Shaders:** SPIR-V snapshots of the VS and FS (kept even after the module is destroyed).
+- **Export:** exports the selected texture or all of them. File names include set/binding/identity; the manifest lists what was saved and what could not be.
 
 ### Water Reflections
 
-| Satır | Değerler |
+| Row | Values |
 | --- | --- |
-| USE SELECTED WATER CANDIDATE | Inspector'da seçilen su draw'ını su profili yapar (WoW suyu için ilk çalıştırmada kendiliğinden) |
+| USE SELECTED WATER CANDIDATE | Makes the water draw selected in the Inspector the water profile (automatic on first run for WoW water) |
 | MODE | OFF → SSR → PLANAR |
-| VIEW | 22 hata ayıklama görünümü: FINAL, MASK, NORMAL, WATER DEPTH, REFLECTION, BASE SURFACE, DISPLACEMENT, LARGE WAVES, MEDIUM/MICRO/FINAL NORMAL, FRESNEL, ROUGHNESS, SSR CONFIDENCE, PLANAR WEIGHT, ENVIRONMENT WEIGHT, SUN GLINTS, WATER THICKNESS, ABSORPTION, REFRACTION, CAUSTICS, WATER TINT |
-| STRENGTH | Yansımanın gücü |
-| CAPTURE DEBUG DATA | Bir sonraki su pass'inin tüm girdilerini `exports/water-capture-*` altına yazar |
+| VIEW | 22 debug views: FINAL, MASK, NORMAL, WATER DEPTH, REFLECTION, BASE SURFACE, DISPLACEMENT, LARGE WAVES, MEDIUM/MICRO/FINAL NORMAL, FRESNEL, ROUGHNESS, SSR CONFIDENCE, PLANAR WEIGHT, ENVIRONMENT WEIGHT, SUN GLINTS, WATER THICKNESS, ABSORPTION, REFRACTION, CAUSTICS, WATER TINT |
+| STRENGTH | Reflection strength |
+| CAPTURE DEBUG DATA | Writes every input of the next water pass to `exports/water-capture-*` |
 | STYLE | MODERN ↔ CLASSIC (A/B) |
 | LAYERS | ALL, REFLECTION, REFLECTION+WAVES, REFLECTION+DEPTH+FOAM, NO REFLECTION |
 | TONE | NATURAL, TROPICAL, DEEP BLUE, EMERALD, GOLDEN |
-| WATER DETAILS | Alt sayfa (aşağıda) |
-| PERFORMANCE TEST | 40 saniyelik otomatik A/B: suyla ve susuz kare süresi |
+| WATER DETAILS | Sub-page (below) |
+| PERFORMANCE TEST | 40-second automatic A/B: frame time with and without the water |
 
 **Water Details:**
 
-- **Köpük:** miktar, desen boyutu, hız, yumuşaklık, gelip gitme, kıyıya erişim.
-- **Doku:** su doku ayrıntısı, oyunun doku opaklığı (CLASSIC).
-- **Taban:** sığ su berraklığı, taban kostikleri.
-- **Yüzey:** güneş parıltısı, açık deniz whitecap'leri, dalga yüksekliği ve dikliği.
-- **MODERN:** pürüzlülük, orta dalgacıklar, mikro dalgacıklar, alt-yüzey ışığı.
-- **Diğer:** yansıma kalitesi (LOW/MEDIUM/HIGH), ayrıntıları varsayılana döndür.
+- **Foam:** amount, pattern size, speed, softness, ebb and flow, reach onto the shore.
+- **Texture:** water texture detail, game texture opacity (CLASSIC).
+- **Seabed:** shallow water clarity, seabed caustics.
+- **Surface:** sun glints, open-sea whitecaps, wave height and steepness.
+- **MODERN:** roughness, medium ripples, micro ripples, subsurface light.
+- **Other:** reflection quality (LOW/MEDIUM/HIGH), reset details to defaults.
 
 ### Volumetric Fog
 
-Sırasıyla:
+In menu order:
 
-- **Görünüm ve kalite:** VIEW (Shift+F5 ile aynı döngü), QUALITY (LOW / MEDIUM / HIGH froxel ızgarası).
-- **Yoğunluk ve yükseklik:** DENSITY, HEIGHT FALLOFF, HEIGHT REFERENCE (GROUND / CAMERA / WORLD Z), BASE, MAX DISTANCE.
-- **Saçılım ve ortam:** FORWARD SCATTER G, ALBEDO, AMBIENT LIGHT (oyunun ortam ışığı × ölçek), AMBIENT COLOR (oyun / fog.ini).
-- **Güneş:** SUN LIGHT (şiddet), SUN DIRECTION (gökyüzü diski / oyun ışığı / fog.ini), SUN SHADOWS (yürüyüş uzunluğu), SKY LIGHT FROM ABOVE, OPEN-SKY SUN.
-- **Kararlılık ve gürültü:** TEMPORAL, NOISE, NOISE SCALE, NOISE DRIFT.
-- **Hazır görünüm:** LOOK: FOREST LIGHT SHAFTS. Yukarıdaki satırları ölçülerek seçilmiş huzme değerlerine ayarlar.
-- **Diğer:**
-  - LIGHT GIZMO ve LIGHT SOURCES: hata ayıklama işaretleri.
-  - GAME FOG: WoW'un mesafe sisi (AS THE GAME / ×N FARTHER / OFF).
+- **View and quality:** VIEW (same cycle as Shift+F5), QUALITY (LOW / MEDIUM / HIGH froxel grid).
+- **Density and height:** DENSITY, HEIGHT FALLOFF, HEIGHT REFERENCE (GROUND / CAMERA / WORLD Z), BASE, MAX DISTANCE.
+- **Scattering and ambient:** FORWARD SCATTER G, ALBEDO, AMBIENT LIGHT (game ambient × scale), AMBIENT COLOR (game / fog.ini).
+- **Sun:** SUN LIGHT (intensity), SUN DIRECTION (sky disc / game light / fog.ini), SUN SHADOWS (march length), SKY LIGHT FROM ABOVE, OPEN-SKY SUN.
+- **Stability and noise:** TEMPORAL, NOISE, NOISE SCALE, NOISE DRIFT.
+- **Preset:** LOOK: FOREST LIGHT SHAFTS. Sets the rows above to measured light-shaft values.
+- **Other:**
+  - LIGHT GIZMO and LIGHT SOURCES: debug markers.
+  - GAME FOG: WoW's distance fog (AS THE GAME / ×N FARTHER / OFF).
   - CAPTURE FOG DATA.
-  - RESET TO DEFAULTS: "her şey açık" görünüm.
+  - RESET TO DEFAULTS: the "everything on" look.
 
 ### Shadows and Occlusion
 
-| Satır | İş |
+| Row | Purpose |
 | --- | --- |
-| SHADOW EDGES | Oyunun gölge filtresinin yayılımı (×1 … ×3) |
-| SOFT SHADOWS | PCSS penumbra boyutu (oyun açılışında yamalanır; sonrasında canlı) |
-| SHADOW FADE / FADE DISTANCE | Gölgenin nesneden uzaklaştıkça solması |
-| CONTACT SHADOWS | Kısa ekran-uzayı güneş gölgeleri |
-| AMBIENT OCCLUSION | Köşeler, duvar dipleri, ağaç altları |
-| TERRAIN SHADOWS / TERRAIN SHADOWS FROM | Tepe ve uçurum gölgeleri; kameradan hangi mesafeden başlayacağı |
-| POINT LIGHT SHADOWS / RANGE / IGNORE / LENGTH | Meşale ve ateş gölgeleri: güç, menzil, ışığın kendi çevresi, gölgenin uzunluğu |
-| INDOOR SUN SHADOWS | İç mekân gölge haritasının gücü |
+| SHADOW EDGES | Spread of the game's shadow filter (×1 … ×3) |
+| SOFT SHADOWS | PCSS penumbra size (patched at game start; live afterwards) |
+| SHADOW FADE / FADE DISTANCE | Shadows fading with distance from the caster |
+| CONTACT SHADOWS | Short screen-space sun shadows |
+| AMBIENT OCCLUSION | Corners, wall bases, under trees |
+| TERRAIN SHADOWS / TERRAIN SHADOWS FROM | Hill and cliff shadows; the distance from the camera where they start |
+| POINT LIGHT SHADOWS / RANGE / IGNORE / LENGTH | Torch and fire shadows: strength, range, the light's own surroundings, shadow length |
+| INDOOR SUN SHADOWS | Indoor shadow map strength |
 
-## Mimari
+## Architecture
 
 ```mermaid
 flowchart LR
     W[Wow.exe<br/>Direct3D 9] --> D[DXVK<br/>D3D9 → Vulkan]
     D --> L[VK_LAYER_depth_probe]
-    L --> V[Vulkan sürücüsü]
-    subgraph L[katman]
+    L --> V[Vulkan driver]
+    subgraph L[layer]
         direction TB
-        H[Kancalar: image, pipeline,<br/>komut kaydı, submit, present]
-        T[Durum takibi:<br/>draw'lar, layout'lar, descriptor'lar]
-        WR[Su: replay + composite]
-        FG[Sis: compute + composite]
-        SS[SPIR-V yaması:<br/>yumuşak gölgeler]
-        OV[Overlay + menü]
-        MEM[Süreç belleği:<br/>kamera, güneş, hava]
+        H[Hooks: image, pipeline,<br/>command recording, submit, present]
+        T[State tracking:<br/>draws, layouts, descriptors]
+        WR[Water: replay + composite]
+        FG[Fog: compute + composite]
+        SS[SPIR-V patching:<br/>soft shadows]
+        OV[Overlay + menu]
+        MEM[Process memory:<br/>camera, sun, weather]
     end
 ```
 
-Katman her Vulkan çağrısını sonraki katmana aynen iletir; yalnızca şu noktalarda iş yapar:
+The layer forwards every Vulkan call to the next layer unchanged and only does work at these points:
 
-| Kanca | Yapılan |
+| Hook | What happens |
 | --- | --- |
-| `vkCreateImage` | Sahne derinliğine aday image'lara `SAMPLED` usage ekler; tam swapchain boyutundaki derinliği seçer |
-| `vkCreateGraphicsPipelines` | Gölge alan piksel shader'larının SPIR-V'sini PCSS'e yeniden yazar; su pipeline'ının tarifini saklar |
-| `vkCmd*` (kayıt) | Bağlı pipeline/set/buffer/dinamik durumu ve layout olaylarını izler. Draw'ları sınıflandırır, gerekirse anlık görüntüsünü alır. Suyun ya da sisin üstüne gelecek efektleri bekletir. Oyunun gölge/sis sabitlerini draw başına değiştirir |
-| `vkCmdEndRendering` / `EndRenderPass` | **Su işi:** su draw'larını gizli bir maske pass'inde yeniden oynatır, sonra composite'i kaydeder |
-| Dünya sonrası ilk pass | **Sis composite'i:** UI'dan önce. Bekletilen parçacıkları sonra yeniden çizer |
-| `vkQueueSubmit` | Sisin compute işini, oyunun ilgili submit'inden hemen önce aynı queue'ya gönderir; zaman damgalarını toplar |
-| `vkQueuePresentKHR` | Overlay ve menüyü çizer. Kare başına `vkQueueWaitIdle` yok; semaphore zinciriyle senkronize ([docs/architecture.md](docs/architecture.md)) |
+| `vkCreateImage` | Adds `SAMPLED` usage to candidate scene depth images; picks the full swapchain-sized depth |
+| `vkCreateGraphicsPipelines` | Rewrites the SPIR-V of shadow-sampling pixel shaders into PCSS; stores the water pipeline's description |
+| `vkCmd*` (recording) | Tracks bound pipelines/sets/buffers/dynamic state and layout transitions. Classifies draws and snapshots them when needed. Holds back effects that land on top of water or fog. Rewrites the game's shadow/fog constants per draw |
+| `vkCmdEndRendering` / `EndRenderPass` | **Water:** replays the water draws in a hidden mask pass, then records the composite |
+| First pass after the world | **Fog composite:** before the UI. Redraws the held-back particles afterwards |
+| `vkQueueSubmit` | Submits the fog compute work to the same queue just before the game's matching submit; collects timestamps |
+| `vkQueuePresentKHR` | Draws the overlay and menu. No per-frame `vkQueueWaitIdle`; synchronized through a semaphore chain ([docs/architecture.md](docs/architecture.md)) |
 
-### Bir karede su
+### Water in one frame
 
-1. Oyun, dünya pass'inde suyu çizer (alfa karışımlı, derinlik yazmaz).
-2. Pass bitince katman, aynı su draw'larını kendi pipeline'larıyla **maske pass'inde** yeniden oynatır. Çıktılar:
+1. The game draws the water in its world pass (alpha blended, no depth writes).
+2. When the pass ends, the layer replays the same water draws with its own pipelines in a **mask pass**. Outputs:
+   - the view-space position and alpha of the water surface at each pixel;
+   - the game's own water shader color W (a second output is added to the shader).
+3. W's mip chain is built with blits (for the texture-free tint).
+4. The scene color is copied; sky visible on screen is folded into the persistent **sky memory**.
+5. The **composite** is drawn full screen into the game's color image. For each water pixel it:
+   - intersects the Gerstner surface;
+   - recovers the seabed;
+   - computes normals, Fresnel, reflection (planar → SSR → sky), sun, absorption, refraction, caustics and foam.
+6. Held-back effects that belong on top of the water are redrawn. All of the application's bindings and dynamic state are restored.
 
-   - her pikselde su yüzeyinin view-space konumu ve alfası;
-   - oyunun su shader'ının kendi rengi W (shader'a ikinci bir çıktı eklenir).
-3. W'nin mip zinciri blit'lerle kurulur (dokusuz ton için).
-4. Sahne rengi kopyalanır; ekranda görünen gökyüzü kalıcı **gökyüzü belleğine** katlanır.
-5. **Composite**, oyunun renk görüntüsüne tam ekran çizilir. Her su pikseli için:
+### Fog in one frame
 
-   - Gerstner yüzeyiyle kesişim bulunur;
-   - taban kurtarılır;
-   - normaller, Fresnel, yansıma (planar → SSR → gökyüzü), güneş, soğurma, kırılma, kostik ve köpük hesaplanır.
-6. Suyun üstüne gelecek bekletilmiş efektler yeniden çizilir. Uygulamanın tüm bağları ve dinamik durumu geri kurulur.
+1. **Compute:** runs in the layer's own command buffer, before the game's submit:
+   - memories: ground, height, sun map, disc finder;
+   - inject (density and noise);
+   - light (sun, ambient, shadow march);
+   - integrate (front-to-back analytic integral, temporal).
+2. **Shade:** AO, contact, terrain and point-light shadows from scene depth at half resolution.
+3. **Composite:** `color·T + inscatter`. Exposure, glare and rays are added; on water pixels the distance stops at the water surface.
+4. With `transparent_fog` on, held-back particles are drawn over the fog.
 
-### Bir karede sis
+### Code map
 
-1. **Compute:** katmanın kendi komut buffer'ında, oyunun submit'inden önce çalışır:
-
-   - bellekler: zemin, yükseklik, güneş haritası, disk bulucu;
-   - inject (yoğunluk ve gürültü);
-   - light (güneş, ortam, gölge yürüyüşü);
-   - integrate (önden arkaya analitik integral, temporal).
-2. **Shade:** sahne derinliğinden yarım çözünürlükte AO, kontakt, arazi ve nokta ışık gölgeleri.
-3. **Composite:** `renk·T + inscatter`. Pozlama, glare ve ışınlar eklenir; su piksellerinde mesafe su yüzeyine kadardır.
-4. `transparent_fog` açıksa bekletilen parçacıklar sisin üstüne çizilir.
-
-### Kod haritası
-
-| Alan | Dosyalar |
+| Area | Files |
 | --- | --- |
-| Dispatch, yaşam döngüsü | `layer.cpp`, `src/layer_state.*` |
-| Derinlik, swapchain, present | `src/depth_tracking.*`, `depth_selection.cpp`, `swapchain_tracking.cpp`, `present.cpp`, `sync_*`, `overlay_sync.cpp` |
-| Overlay ve menü | `src/overlay_*`, `inspector_ui.cpp`, `camera_hud_input.*` |
-| Komut takibi, keşif, Inspector | `src/discovery_*.cpp`, `pipeline_discovery.*`, `inspector_*.cpp`, `draw_classifier.*`, `draw_semantics.*`, `draw_segments.*` |
-| Su | `src/water_reflections.*`, `water_resources.cpp`, `water_capture.cpp`, `water_spirv.cpp`, `water_surface.*` (Gerstner, CPU referansı), `water_shading.*` (Fresnel/soğurma referansı); `shaders/water_composite.frag`, `water_surface.glsl`, `water_camera.frag`, `water_sky.frag` |
-| Sis ve sahne gölgelendirmesi | `src/volumetric_fog.*`, `fog_math.*` (CPU referansı); `shaders/fog_*.comp/.frag/.vert` |
-| Oyunun gölgeleri, sisi, ışıkları | `src/game_soft_shadows.*`, `spirv_soft_shadows.*`, `game_pcf.*`, `game_fog*.*`, `game_lights*.*` |
-| Kamera ve bellek | `src/memory_camera*.*`, `memory_sun.*`, `process_memory.*`, `camera_math.*`, `camera_analyzer.*`, `depth_reconstruction.*`, `scene_debugger.*` |
+| Dispatch, lifecycle | `layer.cpp`, `src/layer_state.*` |
+| Depth, swapchain, present | `src/depth_tracking.*`, `depth_selection.cpp`, `swapchain_tracking.cpp`, `present.cpp`, `sync_*`, `overlay_sync.cpp` |
+| Overlay and menu | `src/overlay_*`, `inspector_ui.cpp`, `camera_hud_input.*` |
+| Command tracking, discovery, Inspector | `src/discovery_*.cpp`, `pipeline_discovery.*`, `inspector_*.cpp`, `draw_classifier.*`, `draw_semantics.*`, `draw_segments.*` |
+| Water | `src/water_reflections.*`, `water_resources.cpp`, `water_capture.cpp`, `water_spirv.cpp`, `water_surface.*` (Gerstner, CPU reference), `water_shading.*` (Fresnel/absorption reference); `shaders/water_composite.frag`, `water_surface.glsl`, `water_camera.frag`, `water_sky.frag` |
+| Fog and scene shading | `src/volumetric_fog.*`, `fog_math.*` (CPU reference); `shaders/fog_*.comp/.frag/.vert` |
+| Game shadows, fog, lights | `src/game_soft_shadows.*`, `spirv_soft_shadows.*`, `game_pcf.*`, `game_fog*.*`, `game_lights*.*` |
+| Camera and memory | `src/memory_camera*.*`, `memory_sun.*`, `process_memory.*`, `camera_math.*`, `camera_analyzer.*`, `depth_reconstruction.*`, `scene_debugger.*` |
 
-## Teknikler
+## Techniques
 
-| Teknik | Nerede | Not |
+| Technique | Where | Notes |
 | --- | --- | --- |
-| Oyunun alfa karışımını geri alma | su | `S = (sahne − a·W)/(1 − a)`. W ve a, su draw'ının yeniden oynatılmasından; premultiplied karışım da destekli |
-| Tutarlılık testi + D24 derinlik öykünmesi | su | Geri alınan taban [0,1] dışındaysa piksel oyunun suyu değildir. Derinlik farkı toleransı 2e-7 (ölçüldü) |
-| Mip zinciri tonu, kübik B-spline okuma | su | Sabit ekran seviyesi yerine dünya boyutunda (~6 yd) ortalama. 4 bilinear örnekle B-spline |
-| Gerstner dalgaları, Newton kesişimi | su | Piksel başına ışın–yüzey kesişimi; CPU ve GPU aynı tanım (`water_surface.cpp` = `.glsl`) |
-| Schlick Fresnel + pürüzlülük tavanı | su | R0 = 0.02 (n = 1.333, ölçüldü), Lagarde'ın tavanı |
-| GGX + Smith görünürlüğü, Toksvig | su | Mip'in ortaladığı mikro eğim varyansının yarısı pürüzlülüğe eklenir |
-| Beer–Lambert, kanal başına | su | Saf su soğurması (Pope & Fry 1997); berraklık ölçeği |
-| SSR: eşit piksel adımlı 1/z yürüyüşü | su | Kalınlık adım boyuna göre büyür; ekran kenarında güven azalır |
-| Planar yansıma | su | Opak draw'lar aynalanmış matrisle, aynı pass içinde yeniden çizilir |
-| Gökyüzü belleği | su | Görülen gökyüzünün yön haritası (128×64) |
-| Crest tarzı kostikler | su | Güneş boyunca projeksiyon, renk ayrışması; dik tabanda ve su çizgisinde sönüm |
-| Jacobian whitecap'ler | su | Sıkışma / Σ QkA, dalga dikliğiyle (Σ kA) kapılı |
-| Spektrumdan doku sentezi | araç | Crest'in normal haritasının ışınsal eğim spektrumu ölçülüp yeni fazlarla üretilir |
-| Draw bekletme ve yeniden çizim | su, sis | Uygulamanın kendi pipeline'larıyla, aynı komut buffer'ında, yeni bir rendering örneğinde |
-| Froxel hacimsel sis | sis | Frostbite'ın analitik dilim integrali, üstel dilimler |
-| Henyey–Greenstein + aureole lobu | sis | İki loblu faz fonksiyonu |
-| Temporal reprojection | sis | Halton jitter; hareket ve sahne kesimine duyarlı geçmiş |
-| Yükseklik belleği ve güneş haritası | sis | Ekran dışındaki örtü de gölge verir; ışınlanmada unutulur |
-| Ekran-uzayı güneş ışınları | sis | GPU Gems 3, bölüm 13; diskin görünen payıyla ölçekli glare |
-| Otomatik pozlama | sis | Parlak kısmın anahtarı ölçülür; yalnız karartır, UI'ya dokunmaz |
-| Horizon tabanlı AO, ekran-uzayı gölge yürüyüşleri | gölge | Kontakt, arazi ve nokta ışık gölgeleri; kenarda normal yok |
-| SPIR-V'de PCSS | gölge | Oyunun gölge örnekleri blocker araması ve penumbra ile yeniden yazılır; canlı değerler DXVK'nın paylaşılan piksel verisinden |
-| Shader sabitlerini yeniden yazma | oyun | PCF yayılımı, mesafe sisi, iç mekân gölgesi |
-| Süreç belleği okuma | kamera, sis | CGCamera, ışık bloğu (güneş yönü, renkler), hava durumu nesnesi |
-| SPIR-V yorumlayıcısı | araştırma | `tools/spirv-eval.py`: oyunun shader'larını kare taramasındaki sabitlerle çalıştırır (gölge haritası ekseni böyle bulundu) |
+| Undoing the game's alpha blend | water | `S = (scene − a·W)/(1 − a)`. W and a come from replaying the water draw; premultiplied blending is supported too |
+| Consistency test + D24 depth emulation | water | If the recovered seabed falls outside [0,1], the pixel is not the game's water. Depth difference tolerance 2e-7 (measured) |
+| Mip-chain tint, cubic B-spline lookup | water | A world-sized (~6 yd) average instead of a fixed screen level. B-spline from 4 bilinear taps |
+| Gerstner waves, Newton intersection | water | Per-pixel ray–surface intersection; CPU and GPU share one definition (`water_surface.cpp` = `.glsl`) |
+| Schlick Fresnel + roughness cap | water | R0 = 0.02 (n = 1.333, measured), Lagarde's cap |
+| GGX + Smith visibility, Toksvig | water | Half the micro-slope variance averaged out by the mips is added to roughness |
+| Per-channel Beer–Lambert | water | Pure water absorption (Pope & Fry 1997); clarity scale |
+| SSR: equal-pixel-step 1/z march | water | Thickness grows with step size; confidence drops at screen edges |
+| Planar reflection | water | Opaque draws redrawn with a mirrored matrix inside the same pass |
+| Sky memory | water | Direction map of the sky seen so far (128×64) |
+| Crest-style caustics | water | Projected along the sun, with dispersion; fades on steep seabeds and at the waterline |
+| Jacobian whitecaps | water | Compression / Σ QkA, gated by wave steepness (Σ kA) |
+| Texture synthesis from a spectrum | tool | Radial slope spectrum of Crest's normal map is measured and regenerated with new phases |
+| Draw hold-back and redraw | water, fog | With the application's own pipelines, in the same command buffer, in a new rendering instance |
+| Froxel volumetric fog | fog | Frostbite's analytic per-slice integral, exponential slices |
+| Henyey–Greenstein + aureole lobe | fog | Two-lobe phase function |
+| Temporal reprojection | fog | Halton jitter; history aware of motion and scene cuts |
+| Height memory and sun map | fog | Off-screen cover still casts shadows; forgotten on teleport |
+| Screen-space sun rays | fog | GPU Gems 3, chapter 13; glare scaled by the visible fraction of the disc |
+| Auto exposure | fog | Measures the key of the bright part; only darkens, never touches the UI |
+| Horizon-based AO, screen-space shadow marches | shadows | Contact, terrain and point-light shadows; no normals required |
+| PCSS in SPIR-V | shadows | The game's shadow lookups rewritten with blocker search and penumbra; live values from DXVK's shared pixel data |
+| Shader constant rewriting | game | PCF spread, distance fog, indoor shadows |
+| Process memory reads | camera, fog | CGCamera, light block (sun direction, colors), weather object |
+| SPIR-V interpreter | research | `tools/spirv-eval.py` runs the game's shaders with constants from a frame scan (this is how the shadow map axis was found) |
 
-Ayarların yanına konan **ÖLÇÜLDÜ / ÇIKARIM / SEZGİSEL / AYAR** etiketleri, bir değerin nereden geldiğini gösterir. Belgeler ve shader yorumları bu kuralı izler.
+The **MEASURED / DERIVED / HEURISTIC / TUNED** tags next to settings show where a value comes from. The docs and shader comments follow the same convention.
 
-## Ayar dosyaları
+## Settings files
 
-`~/.config/vulkan-depth-probe/` (ya da `$XDG_CONFIG_HOME`):
+`~/.config/vulkan-depth-probe/` (or `$XDG_CONFIG_HOME`):
 
-| Dosya | İçerik |
+| File | Contents |
 | --- | --- |
-| `water.ini` | Profil, mod, güç, katmanlar, ton, stil ve bütün su ayrıntıları. `wave1..5` (yön, dalga boyu, genlik, diklik, hız), `wind_direction`, `wave_speed`, `absorption`, `sun_fallback` |
-| `fog.ini` | Sis, ışık, gölge ve sahne gölgelendirmesinin tamamı, yorumlu. Değişiklikler yaklaşık bir saniyede canlı okunur |
-| `settings.ini` | Eski FX menüsü |
+| `water.ini` | Profile, mode, strength, layers, tone, style and every water detail. `wave1..5` (direction, wavelength, amplitude, steepness, speed), `wind_direction`, `wave_speed`, `absorption`, `sun_fallback` |
+| `fog.ini` | All fog, light, shadow and scene shading settings, with comments. Changes are picked up live within about a second |
+| `settings.ini` | Legacy FX menu |
 
-Kod içi varsayılanlar "her şey açık" görünümdür. Menüdeki RESET TO DEFAULTS da buna döner.
+The built-in defaults are the "everything on" look; RESET TO DEFAULTS in the menu returns to it.
 
-## Ortam değişkenleri
+## Environment variables
 
-| Değişken | Davranış |
+| Variable | Behavior |
 | --- | --- |
-| `DEPTH_PROBE_FOG_START=1` | Sis açık başlar (başlatıcının varsayılanı; `0` kapalı başlatır) |
-| `DEPTH_PROBE_DEPTH_PRESENT=1` | Overlay çizimi açık |
-| `DEPTH_PROBE_SURFACE_INSPECTOR=1` | Inspector (başlatıcı verir) |
-| `DEPTH_PROBE_LAYER_LOG` | Log yolu (başlatıcı: `~/vulkan-depth-probe.log`) |
-| `DEPTH_PROBE_SHADER_DIR` | SPIR-V ve doku dizini (varsayılan: projenin `shaders/` dizini) |
-| `DEPTH_PROBE_EXPORT_DIR` | Dışa aktarım ve yakalama kökü (başlatıcı: `exports/`) |
-| `DEPTH_PROBE_WATER_SETTINGS`, `DEPTH_PROBE_FOG_SETTINGS` | Ayar dosyalarının yolları |
-| `DEPTH_PROBE_WATER_CAPTURE=0` | Açılıştaki otomatik su yakalamalarını kapatır (her biri ~100 MB) |
-| `DEPTH_PROBE_GPU_TIMING=1` | Overlay GPU süresi `[FRAME-PERF]` satırında |
-| `DEPTH_PROBE_INSPECTOR_AUTO_CONSTANTS=0` | Seçimde otomatik uniform/shader kaydını kapatır |
-| `DEPTH_PROBE_PIPELINE_EXPLORER=1` | Pipeline gezgini |
-| `DEPTH_PROBE_DRAW_CLASSES=0` | Draw sınıflandırmasını kapatır |
-| `DEPTH_PROBE_MEM_CAMERA=0` | Bellekten kamera okumayı kapatır. `DEPTH_PROBE_MEM_CAMERA_STATIC/OFFSET/ADDR/FIELDS/ROWS`, `DEPTH_PROBE_MEM_FOV_AXIS/SCALE` adresleri ve alanları değiştirir |
-| `DEPTH_PROBE_GIZMO_SOURCE` | Gizmo kamera kaynağı (`auto`, `water`, `memory`). `DEPTH_PROBE_GIZMO_*_OFFSET/SIZE` boyutları |
-| `DEPTH_PROBE_SHADER_HOT_RELOAD=1` | Eski overlay shader'ları için 500 ms'de bir yeniden yükleme |
-| `DEPTH_PROBE_SCENE_COLOR=1`, `DEPTH_PROBE_SSAO=1`, `DEPTH_PROBE_SSR=1` | Eski FX önkoşulları |
-| `DEPTH_PROBE_MENU_VISIBLE=1`, `DEPTH_PROBE_UI_INPUT=0`, `DEPTH_PROBE_UI_SHARED_POINTER=0` | Menü ve giriş davranışı |
-| `DEPTH_PROBE_WATER_FREEZE=1` | Yalnız testler: sabit dalga zamanı |
+| `DEPTH_PROBE_FOG_START=1` | Start with fog on (launcher default; `0` starts it off) |
+| `DEPTH_PROBE_DEPTH_PRESENT=1` | Enable overlay drawing |
+| `DEPTH_PROBE_SURFACE_INSPECTOR=1` | Enable the Inspector (set by the launcher) |
+| `DEPTH_PROBE_LAYER_LOG` | Log path (launcher: `~/vulkan-depth-probe.log`) |
+| `DEPTH_PROBE_SHADER_DIR` | SPIR-V and texture directory (default: the project's `shaders/`) |
+| `DEPTH_PROBE_EXPORT_DIR` | Root for exports and captures (launcher: `exports/`) |
+| `DEPTH_PROBE_WATER_SETTINGS`, `DEPTH_PROBE_FOG_SETTINGS` | Settings file paths |
+| `DEPTH_PROBE_WATER_CAPTURE=0` | Disable the automatic water captures at startup (~100 MB each) |
+| `DEPTH_PROBE_GPU_TIMING=1` | Overlay GPU time in the `[FRAME-PERF]` log line |
+| `DEPTH_PROBE_INSPECTOR_AUTO_CONSTANTS=0` | Disable automatic uniform/shader capture on selection |
+| `DEPTH_PROBE_PIPELINE_EXPLORER=1` | Pipeline explorer |
+| `DEPTH_PROBE_DRAW_CLASSES=0` | Disable draw classification |
+| `DEPTH_PROBE_MEM_CAMERA=0` | Disable reading the camera from memory. `DEPTH_PROBE_MEM_CAMERA_STATIC/OFFSET/ADDR/FIELDS/ROWS` and `DEPTH_PROBE_MEM_FOV_AXIS/SCALE` override addresses and fields |
+| `DEPTH_PROBE_GIZMO_SOURCE` | Gizmo camera source (`auto`, `water`, `memory`). `DEPTH_PROBE_GIZMO_*_OFFSET/SIZE` for sizes |
+| `DEPTH_PROBE_SHADER_HOT_RELOAD=1` | Reload legacy overlay shaders every 500 ms |
+| `DEPTH_PROBE_SCENE_COLOR=1`, `DEPTH_PROBE_SSAO=1`, `DEPTH_PROBE_SSR=1` | Legacy FX prerequisites |
+| `DEPTH_PROBE_MENU_VISIBLE=1`, `DEPTH_PROBE_UI_INPUT=0`, `DEPTH_PROBE_UI_SHARED_POINTER=0` | Menu and input behavior |
+| `DEPTH_PROBE_WATER_FREEZE=1` | Tests only: fixed wave time |
 
-## Araçlar
+## Tools
 
-Oyun açıkken, menüye dokunmadan veri çekmek için katman, `exports/` altında **istek dosyalarını** yoklar:
+To pull data out of a running game without touching the menu, the layer polls for **request files** under `exports/`:
 
-| Komut | İş |
+| Command | Purpose |
 | --- | --- |
-| `tools/frame-scan.py --request` | Bütün kareyi tarar ve sıralı bir rapor üretir (pass'ler, sınıflar, alfa testi, gölge haritaları) |
-| `tools/fog-capture.py --request` | Sisin bir karesini (sis öncesi/sonrası renk, hacimler, bellekler) yakalar ve özetler |
-| `touch exports/water-capture-request` | Bir sonraki su pass'ini yakalar |
-| `tools/water-preview.py <capture>` | Su composite'ini yakalanmış bir kare üzerinde GPU'da yeniden çalıştırır ve PNG yazar; debug görünümü, stil, güneş ve süre (ms) seçenekleri var |
-| `tools/fog-whatif.py`, `fog-shafts.py` | Sis yakalaması üzerinde "şu ayarla ne olurdu" yeniden çizimi ve huzme ölçümü |
-| `tools/spirv-eval.py`, `spirv-trace.py` | Oyunun SPIR-V'sini çalıştıran yorumlayıcı ve izleyici |
-| `tools/light-constants.py`, `shadow-constants.py`, `cascade-check.py`, `find-sun-direction.py` | Işık, gölge ve güneş sabitlerinin araştırması |
-| `tools/generate-modern-water-textures.py` | MODERN su dokuları (özgün). `--crest DIR` ile yerel bir Crest kopyasından çevirir; bu dokular repoya girmez |
-| `tools/generate-water-textures.py` | CLASSIC su dokuları |
-| `tools/discovery-report.py`, `reflection-input-report.py`, `depth-reconstruction-check.py` | Discovery ve kamera rekonstrüksiyon raporları |
+| `tools/frame-scan.py --request` | Scans a whole frame and writes a ranked report (passes, classes, alpha testing, shadow maps) |
+| `tools/fog-capture.py --request` | Captures one fog frame (pre/post-fog color, volumes, memories) and summarizes it |
+| `touch exports/water-capture-request` | Captures the next water pass |
+| `tools/water-preview.py <capture>` | Re-runs the water composite on the GPU over a captured frame and writes a PNG; options for debug view, style, sun and timing (ms) |
+| `tools/fog-whatif.py`, `fog-shafts.py` | "What would this setting do" re-renders and light-shaft measurements over a fog capture |
+| `tools/spirv-eval.py`, `spirv-trace.py` | Interpreter and tracer that execute the game's SPIR-V |
+| `tools/light-constants.py`, `shadow-constants.py`, `cascade-check.py`, `find-sun-direction.py` | Research into light, shadow and sun constants |
+| `tools/generate-modern-water-textures.py` | MODERN water textures (original). `--crest DIR` converts from a local Crest checkout instead; those textures never enter the repository |
+| `tools/generate-water-textures.py` | CLASSIC water textures |
+| `tools/discovery-report.py`, `reflection-input-report.py`, `depth-reconstruction-check.py` | Discovery and camera reconstruction reports |
 
-## Testler
+## Tests
 
 ```bash
-ctest --test-dir build32 --output-on-failure        # 29 birim/entegrasyon testi
-build32/water_vulkan_smoke                    # gerçek GPU, pencere açmaz
+ctest --test-dir build32 --output-on-failure        # 29 unit/integration tests
+build32/water_vulkan_smoke                    # real GPU, no window
 build32/fog_vulkan_smoke
 build32/inspector_vulkan_smoke
 build32/discovery_vulkan_smoke
 build32/soft_shadows_vulkan_smoke
-# Khronos validation ile (64-bit build gerekir):
+# With Khronos validation (needs a 64-bit build):
 cmake -S . -B /tmp/build64 -G Ninja -DCMAKE_BUILD_TYPE=Release -DDEPTH_PROBE_BUILD_TESTS=ON && cmake --build /tmp/build64
 DEPTH_PROBE_SMOKE_VALIDATION=1 /tmp/build64/water_vulkan_smoke
 ```
 
-Smoke testleri gerçek GPU'da sentetik sahneler kurar ve sonuçları piksel düzeyinde CPU referanslarıyla karşılaştırır. Örnek kontroller:
+The smoke tests build synthetic scenes on a real GPU and compare the results pixel by pixel against CPU references. Example checks:
 
-- Gerstner yer değiştirmesi, Fresnel ve soğurma görünümleri CPU tanımıyla en çok 1–2/255 farklı.
-- Dokusuz su tonu, desenli bir "oyun dokusunda" bile desenin ortalaması.
-- Sudan sonra çizilen bir efekt, composite'in üstüne aynen ekleniyor.
-- Oyunun su çizmediği pikseller hiç değişmiyor.
-- Sis, CPU fizik referansıyla aynı; UI bit bit korunuyor.
+- Gerstner displacement, Fresnel and absorption views differ from the CPU definition by at most 1–2/255.
+- The texture-free water tint is the average of the pattern, even over a patterned "game texture".
+- An effect drawn after the water lands on top of the composite unchanged.
+- Pixels where the game drew no water are untouched.
+- Fog matches the CPU physics reference; the UI is preserved bit for bit.
 
-Önemli kontrollerin her biri bir "mutasyon" ile denendi: ilgili düzeltme kaldırılınca test başarısız oluyor. Ayrıntılar her belgenin "Testler" bölümünde.
+Each important check was validated by a "mutation": with the corresponding fix removed, the test fails. Details are in the "Tests" section of each doc.
 
-## Dizin yapısı
+## Repository layout
 
-| Yol | İçerik |
+| Path | Contents |
 | --- | --- |
-| `layer.cpp`, `src/` | Katman kaynağı |
-| `shaders/` | GLSL kaynakları, üretilmiş `.spv` dosyaları, `water_detail.bin`. `water_modern.bin` başlatıcı tarafından üretilir |
-| `tests/` | Birim ve GPU testleri, test shader'ları, gerçek WoW shader fikstürleri |
-| `tools/` | Başlatıcı, shader derleyici, önizleme, tarama ve araştırma araçları |
-| `docs/` | Belgeler ve galeri (`docs/images/gallery/`) |
-| `effects/rainbow-wow/` | Eski rainbow efektinin arşivi; bir test bunun shader'ını okur, silmeyin |
-| `exports/` | Yakalamalar ve dışa aktarımlar (git'e girmez) |
-| `backups/` | Eski kaynak arşivleri |
+| `layer.cpp`, `src/` | Layer source |
+| `shaders/` | GLSL sources, generated `.spv` files, `water_detail.bin`. `water_modern.bin` is generated by the launcher |
+| `tests/` | Unit and GPU tests, test shaders, real WoW shader fixtures |
+| `tools/` | Launcher, shader builder, preview, scan and research tools |
+| `docs/` | Documentation and gallery (`docs/images/gallery/`) |
+| `effects/rainbow-wow/` | Archive of the legacy rainbow effect; a test reads its shader, do not delete |
+| `exports/` | Captures and exports (not tracked by git) |
 
-## Belgeler
+## Documentation
 
-- [docs/water.md](docs/water.md): su sistemi, MODERN stil, ayarlar, log satırları, performans, bilinen sınırlar, geliştirme geçmişi.
-- [docs/water-references.md](docs/water-references.md): Crest, Mistral-Water ve LesusX incelemesi, görsel açık analizi.
-- [docs/fog.md](docs/fog.md): hacimsel sis, güneş, gölgeler, sahne gölgelendirmesi, yumuşak gölge yaması, performans, oyun içi kontrol listesi.
-- [docs/inspector.md](docs/inspector.md): Inspector, dışa aktarma, WoW bulguları, kamera araştırması.
-- [docs/draw-classes.md](docs/draw-classes.md): semantik draw sınıfları ve kare bölütleme.
-- [docs/lights.md](docs/lights.md): oyunun nokta ışıkları ve gizmolar.
-- [docs/architecture.md](docs/architecture.md): kod haritası, derinlik seçimi, present senkronizasyonu, build ve testler.
-- [docs/postfx.md](docs/postfx.md): eski efektler, ayar dosyası, menü ve giriş.
+The detailed docs are currently written in Turkish.
 
-## Bilinen kısıtlar
+- [docs/water.md](docs/water.md): the water system, MODERN style, settings, log lines, performance, known limits, development history.
+- [docs/water-references.md](docs/water-references.md): a review of Crest, Mistral-Water and LesusX, and a visual gap analysis.
+- [docs/fog.md](docs/fog.md): volumetric fog, sun, shadows, scene shading, the soft shadow patch, performance, in-game checklist.
+- [docs/inspector.md](docs/inspector.md): the Inspector, exporting, WoW findings, camera research.
+- [docs/draw-classes.md](docs/draw-classes.md): semantic draw classes and frame segmentation.
+- [docs/lights.md](docs/lights.md): the game's point lights and gizmos.
+- [docs/architecture.md](docs/architecture.md): code map, depth selection, present synchronization, build and tests.
+- [docs/postfx.md](docs/postfx.md): legacy effects, settings file, menu and input.
 
-- **Senkronizasyon:** tek graphics queue, `swapchainMaintenance1` present fence desteği ve swapchain boyutunda bir derinlik image'ı gerekir. Koşullar sağlanmazsa katman görüntüyü değiştirmeden geçer ve nedenini loga yazar.
-- **Su:** yalnız WoW'un bilinen su shader çifti ve yatay su seviyeleri destekleniyor. Eğimli nehirler ve şelaleler oyunun görünümünde kalıyor. Su altı görünümü yok.
-- **Yumuşak gölgeler:** yama oyun açılırken uygulanır; `soft_shadows` sonradan açılırsa oyunu yeniden başlatmak gerekir.
-- **Performans:** GTX 1660 Ti'de 1080p'de su composite'i yaklaşık 1–3,5 ms (sahneye göre), sis yaklaşık 2–3,5 ms. Menüdeki PERFORMANCE TEST gerçek etkiyi ölçer.
-- **Inspector:** görünen draw'ın kimliğini kanıtlayamaz. Aday sıralar ve sırayla gezdirir.
+## Known limitations
+
+- **Synchronization:** requires a single graphics queue, `swapchainMaintenance1` present fence support and a swapchain-sized depth image. If these are not met, the layer passes frames through unchanged and logs the reason.
+- **Water:** only WoW's known water shader pair and horizontal water levels are supported. Sloped rivers and waterfalls keep the game's look. There is no underwater view.
+- **Soft shadows:** the patch is applied at game start; if `soft_shadows` is turned on later, the game must be restarted.
+- **Performance:** on a GTX 1660 Ti at 1080p the water composite costs roughly 1–3.5 ms (depending on the scene) and the fog roughly 2–3.5 ms. PERFORMANCE TEST in the menu measures the real impact.
+- **Inspector:** it cannot prove which draw is the visible one. It ranks candidates and lets you step through them.
+
+## License
+
+[MIT](LICENSE).
+
+---
+
+WoW Vulkan Probe is an independent fan project. It is not affiliated with or endorsed by Blizzard Entertainment. World of Warcraft is a trademark of Blizzard Entertainment, Inc.
