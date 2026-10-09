@@ -1,0 +1,52 @@
+static void asset_policy_cases() {
+    using namespace depth_probe::discovery;
+    auto im=std::make_shared<Image>();im->handle=91;im->generation=10;im->format=VK_FORMAT_R8G8B8A8_UNORM;im->extent={8,4,1};im->layers=1;im->mips=3;im->samples=1;im->flags=VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT|VK_IMAGE_CREATE_EXTENDED_USAGE_BIT;im->usage=VK_IMAGE_USAGE_SAMPLED_BIT;
+    auto v=std::make_shared<View>();v->image=im;v->type=VK_IMAGE_VIEW_TYPE_2D;v->format=im->format;v->range={VK_IMAGE_ASPECT_COLOR_BIT,1,2,0,1};
+    ResourceUse r;r.set=1;r.binding=2;r.descriptor.known=true;r.descriptor.view=v;
+    auto device=(VkDevice)uintptr_t(0x9988);auto queue=(VkQueue)uintptr_t(0x8877);auto& s=device_state(device);s.images[91]=im;
+    CHECK(!inspector_texture_source(s,r,id(queue)));
+    Frame full;full.layouts.push_back({im,VK_IMAGE_LAYOUT_GENERAL,true,{VK_IMAGE_ASPECT_COLOR_BIT,0,3,0,1}});accept_submit(device,queue,std::move(full));
+    auto source=inspector_texture_source(s,r,id(queue));CHECK(source && source.width==4 && source.height==2);
+    Frame mip;mip.layouts.push_back({im,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,true,{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}});accept_submit(device,queue,std::move(mip));
+    CHECK(!im->layoutKnown && inspector_texture_source(s,r,id(queue)));v->range.baseMipLevel=0;CHECK(!inspector_texture_source(s,r,id(queue)));v->range.baseMipLevel=1;
+    auto other=(VkQueue)uintptr_t(0x8866);CHECK(!inspector_texture_source(s,r,id(other)));
+    r.updateAfterBind=true;CHECK(!inspector_texture_source(s,r,id(queue)));r.updateAfterBind=false;
+    im->flags|=VK_IMAGE_CREATE_ALIAS_BIT;CHECK(!inspector_texture_source(s,r,id(queue)));im->flags&=~VK_IMAGE_CREATE_ALIAS_BIT;
+    v->previewCompatible=false;CHECK(!inspector_texture_source(s,r,id(queue)));v->previewCompatible=true;
+    v->format=VK_FORMAT_BC3_SRGB_BLOCK;CHECK(inspector_texture_source(s,r,id(queue)).conversion==1);
+    v->format=VK_FORMAT_BC5_SNORM_BLOCK;CHECK(inspector_texture_source(s,r,id(queue)).conversion==6);v->format=im->format;
+    Frame unknown;unknown.truncated=true;accept_submit(device,queue,std::move(unknown));CHECK(!inspector_texture_source(s,r,id(queue)));
+    im->mipLayouts[1]={VK_IMAGE_LAYOUT_GENERAL,id(queue),true};
+    s.images[91]=std::make_shared<Image>(*im);s.images[91]->generation++;CHECK(!inspector_texture_source(s,r,id(queue)));s.images[91]=im;
+    char temp[]="/tmp/depth-probe-asset-policy-XXXXXX";auto root=mkdtemp(temp);CHECK(root);setenv("DEPTH_PROBE_EXPORT_DIR",root,1);
+    auto code=read_spirv_file(std::string(DEPTH_PROBE_TEST_ROOT_DIR)+"/tests/inspector_scene.vert.spv");auto shader=std::make_shared<Shader>(inspect_spirv(code.data(),code.size()*4));
+    Inspector in;in.selected=SubmittedDraw{};in.selected->draw.pipeline=std::make_shared<Pipeline>();in.selected->draw.pipeline->vs=shader;in.selected->draw.pipeline->vsEntry="main";in.drawIdentity=234;in.selected->resources={r,r};in.selected->resources[1].binding=3;
+    auto constants=std::make_shared<UniformSnapshot>();constants->set=2;constants->binding=0;constants->bytes={0,0,128,63};constants->range=4;constants->submit=12;constants->ticket=7;in.selected->uniforms={constants};
+    request_asset_export(in,true);flush_asset_exports();auto job=in.assetExport;CHECK(job->ready && job->textures.size()==2 && asset_export_busy(job));
+    CHECK(std::filesystem::exists(std::filesystem::path(job->directory)/"draw-state.json"));
+    CHECK(job->drawState.find("\"cameraMatrices\":\"unavailable\"")!=std::string::npos && job->drawState.find("\"depthWrite\":0")!=std::string::npos);
+    request_asset_export(in,true);CHECK(in.assetExport==job); // duplicate request while active
+    {std::lock_guard lock(job->lock);job->textures[0].width=2;job->textures[0].height=1;}
+    CHECK(save_asset_pixels(job,0,{255,0,0,0,0,255,0,127}));asset_texture_failed(job,1,"unsupported test source");flush_asset_exports();CHECK(!asset_export_busy(job));
+    auto load=[](const std::filesystem::path& p){std::ifstream f(p,std::ios::binary);return std::vector<unsigned char>(std::istreambuf_iterator<char>(f),{});};
+    auto bitmap=load(std::filesystem::path(job->directory)/job->textures[0].file);CHECK(bitmap.size()==130 && bitmap[0]=='B' && bitmap[1]=='M' && bitmap[22]==255 && bitmap[26]==1 && bitmap[28]==32);
+    CHECK(bitmap[122]==0 && bitmap[123]==0 && bitmap[124]==255 && bitmap[125]==0 && bitmap[126]==0 && bitmap[127]==255 && bitmap[128]==0 && bitmap[129]==127);
+    auto spirv=load(std::filesystem::path(job->directory)/("vs-"+hex(shader->hash)+".spv"));CHECK(spirv.size()==code.size()*4 && !std::memcmp(spirv.data(),code.data(),spirv.size()));
+    auto manifest=load(std::filesystem::path(job->directory)/"manifest.json");const std::string text(manifest.begin(),manifest.end());CHECK(text.find("\"status\":\"saved\"")!=std::string::npos && text.find("unsupported test source")!=std::string::npos && text.find("\"role\":\"unknown\"")!=std::string::npos);
+    auto stateBytes=load(std::filesystem::path(job->directory)/"draw-state.json");CHECK(std::string(stateBytes.begin(),stateBytes.end())==job->drawState);
+    auto bufferBytes=load(std::filesystem::path(job->directory)/"uniform-s2-b0-e0.bin");CHECK(bufferBytes==constants->bytes);
+    auto bufferManifest=load(std::filesystem::path(job->directory)/"buffers.json");std::string bufferText(bufferManifest.begin(),bufferManifest.end());CHECK(bufferText.find("\"saved\":1")!=std::string::npos && bufferText.find("\"cameraSemanticsVerified\":false")!=std::string::npos);
+    CHECK(text.find("\"renderTargetCapable\":false")!=std::string::npos);
+    in.geometryCandidate=true;im->usage|=VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    request_asset_export(in,false);flush_asset_exports();auto rt=in.assetExport;asset_texture_failed(rt,0,"test render target");flush_asset_exports();
+    auto rtManifest=load(std::filesystem::path(rt->directory)/"manifest.json");std::string rtText(rtManifest.begin(),rtManifest.end());
+    CHECK(rtText.find("\"scope\":\"depth-tested-geometry-candidate\"")!=std::string::npos && rtText.find("\"renderTargetCapable\":true")!=std::string::npos);
+    request_asset_export(in,false,true);flush_asset_exports();CHECK(in.assetExport!=job && in.assetExport->textures.empty() && !asset_export_busy(in.assetExport));
+    const auto blocked=std::string(root)+"/not-a-directory";std::ofstream(blocked)<<"file";setenv("DEPTH_PROBE_EXPORT_DIR",blocked.c_str(),1);request_asset_export(in,false,true);flush_asset_exports();CHECK(in.assetExport->failed);setenv("DEPTH_PROBE_EXPORT_DIR",root,1);
+    auto countDirectories=[&]{return std::distance(std::filesystem::directory_iterator(root),std::filesystem::directory_iterator{});};
+    const auto beforeAuto=countDirectories();auto manual=in.assetExport;setenv("DEPTH_PROBE_INSPECTOR_AUTO_CONSTANTS","1",1);
+    auto_export_uniforms(in);auto_export_uniforms(in);flush_asset_exports();CHECK(countDirectories()==beforeAuto+1 && in.assetExport==manual);
+    for(unsigned i=0;i<8;++i){++in.drawIdentity;auto_export_uniforms(in);}flush_asset_exports();CHECK(countDirectories()==beforeAuto+4 && in.autoUniformExports.size()==4);
+    setenv("DEPTH_PROBE_INSPECTOR_AUTO_CONSTANTS","0",1);
+    devices.erase(device);std::puts("PASS: mutable image, per-mip layout/queue/lifetime, bounded bitmap/alpha, shader bytes, manifest skips and export I/O failure");
+}

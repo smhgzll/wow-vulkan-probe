@@ -1,0 +1,18 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Once per resource set: the smoke's value-noise lattice (fog_inject.comp fogNoiseFactor samples it). Four independent
+// lattices of uniform [0,1] values, one per channel (rgb: the domain warp, a: the fBm octaves); the texture's 64 cells
+// (fog::noiseLatticeCells) repeat, so REPEAT sampling tiles with the origin reduction (fog::noise_period). The integer hash
+// the noise evaluated per sample before 2026-09-27 (8 per lattice per sample), with a per-channel seed.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(set = 0, binding = 13, rgba16f) uniform writeonly image3D noiseLatticeOut;
+float fogLatticeHash(uvec3 q, uint channel) {
+    uint h = q.x * 73856093u ^ q.y * 19349663u ^ q.z * 83492791u ^ (channel + 1u) * 2654435761u;
+    h = (h ^ (h >> 13u)) * 1274126177u;
+    return float((h ^ (h >> 16u)) & 0xffffu) / 65535.0;
+}
+void main() {
+    uvec3 q = gl_GlobalInvocationID;
+    if (any(greaterThanEqual(q, uvec3(imageSize(noiseLatticeOut))))) return;
+    imageStore(noiseLatticeOut, ivec3(q), vec4(fogLatticeHash(q, 0u), fogLatticeHash(q, 1u), fogLatticeHash(q, 2u), fogLatticeHash(q, 3u)));
+}

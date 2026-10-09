@@ -1,0 +1,27 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Ground histogram (after the memory passes): the floor memory (lowest surface seen per cell) within 128 yards of the camera,
+// every second cell, counted by height relative to the camera in 1-yard bins. The host takes a low percentile of it as the
+// area's ground level (height_reference = ground: the fog lies on the land, not on the camera - fog_math.hpp ground_level).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 12, std430) buffer Readback { uint v[]; } found;
+layout(set = 0, binding = 15, r32ui) uniform uimage2D floorMap;
+shared uint local[fogGroundBins];   // per workgroup, then one global add per non-empty bin (flat land puts most cells in one bin)
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    for (uint k = i; k < fogGroundBins; k += 64u) local[k] = 0u;
+    barrier();
+    const int radius = 256, step = 2;   // cells (0.5 yd): 128 yd, sampled every yard
+    ivec2 o = ivec2(gl_GlobalInvocationID.xy) * step - radius;
+    if (all(lessThan(o, ivec2(radius))) && dot(vec2(o), vec2(o)) <= float(radius * radius)) {
+        uint f = imageLoad(floorMap, fogMemoryTexel(fog.memoryB.xy + o)).r;
+        if (f != fogFloorEmpty) {
+            int bin = int(floor(fogHeightDecode(f) - fog.memoryA.z + 128.0));
+            if (bin >= 0 && bin < int(fogGroundBins)) atomicAdd(local[bin], 1u);
+        }
+    }
+    barrier();
+    for (uint k = i; k < fogGroundBins; k += 64u)
+        if (local[k] != 0u) atomicAdd(found.v[uint(fog.memoryC.z) * fogReadbackWords + 16u + k], local[k]);
+}

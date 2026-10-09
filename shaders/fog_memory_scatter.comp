@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Memories, pass 2 of 2: every pixel of the previous frame's world depth (the shadow image, with that frame's camera) raises
+// (a) its world x/y cell of the height memory to the pixel's world height, and (b) its cell across the sun of the sun map to
+// the pixel's distance toward the sun, and (c) lowers its floor memory cell to the pixel's height when it lies under the
+// camera (the ground under a canopy, the water surface: fog_ground.comp). Canopies, roofs and cliffs seen once keep occluding after they left the screen.
+// (d) The water surface's pixels (stored negative in the view depth) under the camera within 128 yd are counted by height
+// relative to the camera, as fog_ground.comp's bins: the host keeps the area's water level and counts the floor under it as
+// the surface. A frame without the water mask shows the seabed, and the floor never rises (Booty Bay, 2026-09-29: the fog's
+// ground sank from -3 to -11 yd). The water pixels do not lift the floor cells themselves: along a pixel's ray the surface
+// lies nearer than the seabed, in another cell - most seabed cells no surface pixel ever lands in.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 5) uniform sampler2D shadowDepth;
+layout(set = 0, binding = 6, r32ui) uniform uimage2D heightMap;
+layout(set = 0, binding = 8, r32ui) uniform uimage2D sunMap;
+layout(set = 0, binding = 12, std430) buffer Readback { uint v[]; } found;
+layout(set = 0, binding = 15, r32ui) uniform uimage2D floorMap;
+shared uint water[fogWaterBins];   // per workgroup, then one global add per non-empty bin (a sea puts most pixels in one bin)
+void scatter(ivec2 p) {
+    if (any(greaterThanEqual(p, ivec2(fog.shadowImage.xy)))) return;
+    float raw = texelFetch(shadowDepth, p, 0).r, d = abs(raw);   // (a water surface is stored negative: fog_shadow_depth.frag)
+    if (d <= 0.0 || d > 1e5) return;   // sky / cleared
+    vec2 pixel = (vec2(p) + .5) * fog.shadowImage.z;
+    vec2 ndc = (pixel - fog.shadowViewport.xy) / fog.shadowViewport.zw * 2.0 - 1.0;
+    vec3 v = vec3(ndc.x / fog.shadowRight.w, ndc.y / fog.shadowUp.w, 1.0) * d;
+    vec3 offset = fog.shadowRight.xyz * v.x + fog.shadowUp.xyz * v.y + fog.shadowForward.xyz * v.z - fog.shadowOffset.xyz;   // relative to this camera
+    if (raw < 0.0 && offset.z < 0.0 && offset.z > -128.0 && dot(offset.xy, offset.xy) <= 128.0 * 128.0) atomicAdd(water[uint(offset.z + 128.0)], 1u);
+    if ((fog.memoryB.w & 4) != 0) {
+        ivec2 cell = fogMemoryCell(offset);
+        if (fogMemoryInside(cell)) {
+            uint h = fogHeightEncode(fog.memoryA.z + offset.z);
+            imageAtomicMax(heightMap, fogMemoryTexel(cell), h);
+            // Floors only under the camera: a canopy or a roof seen from below is no ground (Shadowglen, after a reset: the
+            // canopy became the "ground" 59 yd over the camera and the fog base went up with it).
+            if (offset.z < 0.0) imageAtomicMin(floorMap, fogMemoryTexel(cell), h);
+        }
+    }
+    if ((fog.sunMapB.w & 4) != 0) {
+        ivec2 cell = fogSunCell(offset);
+        if (fogSunInside(cell)) imageAtomicMax(sunMap, fogMemoryTexel(cell), fogHeightEncode(fog.sunMapA.z + dot(offset, fog.sunS.xyz)));
+    }
+}
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    for (uint k = i; k < fogWaterBins; k += 64u) water[k] = 0u;
+    barrier();
+    scatter(ivec2(gl_GlobalInvocationID.xy));
+    barrier();
+    for (uint k = i; k < fogWaterBins; k += 64u)
+        if (water[k] != 0u) atomicAdd(found.v[uint(fog.memoryC.z) * fogReadbackWords + 16u + fogGroundBins + fogExposureBins + k], water[k]);
+}

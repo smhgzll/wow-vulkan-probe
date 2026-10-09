@@ -1,0 +1,30 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Memories, pass 1 of 2 (before fog_memory_scatter): z = 0 the height memory (world x/y cells), z = 1 the sun map (cells
+// across the sun). Each texel of a toroidal grid represents the one cell of the window around the camera that maps onto it.
+// A texel that represented another cell (the camera moved), or everything after a teleport / a new sun basis (flag 2), is
+// cleared; the rest sinks by the decay (moved characters fade, what stays in view is written again every frame).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 6, r32ui) uniform uimage2D heightMap;
+layout(set = 0, binding = 7, r32ui) uniform uimage2D tagMap;
+layout(set = 0, binding = 8, r32ui) uniform uimage2D sunMap;
+layout(set = 0, binding = 9, r32ui) uniform uimage2D sunTagMap;
+layout(set = 0, binding = 15, r32ui) uniform uimage2D floorMap;   // lowest surface seen per height-memory cell (never decays)
+void main() {
+    ivec2 t = ivec2(gl_GlobalInvocationID.xy);
+    bool sun = gl_GlobalInvocationID.z == 1u;
+    ivec4 b = sun ? fog.sunMapB : fog.memoryB;
+    int n = b.z;
+    if (any(greaterThanEqual(t, ivec2(n))) || (b.w & 1) == 0) return;
+    ivec2 low = b.xy - n / 2;
+    ivec2 cell = low + ivec2(fogWrap(t.x - low.x, n), fogWrap(t.y - low.y, n));
+    uint tag = fogMemoryTag(cell);
+    uint h = sun ? imageLoad(sunMap, t).r : imageLoad(heightMap, t).r;
+    uint oldTag = sun ? imageLoad(sunTagMap, t).r : imageLoad(tagMap, t).r;
+    if ((b.w & 2) != 0 || oldTag != tag) {
+        if (sun) imageStore(sunTagMap, t, uvec4(tag)); else { imageStore(tagMap, t, uvec4(tag)); imageStore(floorMap, t, uvec4(fogFloorEmpty)); }
+        h = 0u;
+    } else if (h != 0u && fog.memoryC.x > 0.0) h = fogHeightEncode(fogHeightDecode(h) - fog.memoryC.x);
+    if (sun) imageStore(sunMap, t, uvec4(h)); else imageStore(heightMap, t, uvec4(h));
+}

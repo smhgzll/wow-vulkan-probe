@@ -1,0 +1,179 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Pass 2: in-scattering source per froxel - rgb = sigma_s * (ambient * (1 - share + share * skyVisibility)
+//                                                          + phase * sun * sunVisibility) + emissive, a = sigma_t.
+// Two lights cast shadows in the fog: the sun, and the sky light from above (a share of the ambient, fog.memoryC.y).
+// 4x4x4 groups (not 8x8x1): froxels along the same view ray march toward the sun along the same line on the screen and
+// read the same depth texels, so depth-neighbours in one group share the cache (high preset, 1660 Ti: 3.44 -> 2.68 ms).
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 1, rgba16f) uniform readonly image3D medium;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image3D lighting;
+layout(set = 0, binding = 4) uniform sampler3D history;    // the previous frame's lighting volume
+layout(set = 0, binding = 5) uniform sampler2D shadowDepth; // the previous frame's view depth (fog_shadow_depth.frag)
+layout(set = 0, binding = 6, r32ui) uniform readonly uimage2D heightMap; // highest surface seen per world cell (fog_memory_*.comp)
+layout(set = 0, binding = 8, r32ui) uniform readonly uimage2D sunMap;    // per cell across the sun: the seen surface closest to it
+layout(set = 0, binding = 10, rgba8) uniform writeonly image3D visibilityOut; // fog capture frames only (mode.z = 1): r = sun, b = sky
+layout(set = 0, binding = 16) uniform sampler2DArray cascadeMaps;  // the game's four sun cascades, reduced (fog_cascade_reduce.frag)
+
+// The shadow camera (the previous frame's, whose depth the shadow image holds) is set once a depth exists.
+bool fogHaveDepth() { return fog.shadowRight.w > 0.0; }
+float fogNoiseAt(uvec3 id) { return fract(52.9829189 * fract(.06711056 * float(id.x + 7u * id.z) + .00583715 * float(id.y))); }
+
+// Sun map: the fraction of 4 sub-cell taps (PCF, soft edges) at which no seen surface lies between the point (relative to
+// this camera) and the sun. `lead` = how far toward the sun the test starts (the point's own surroundings - the ground at a
+// low sun, one cell wide - must not shadow it). A canopy blocks only the rays that really hit it; the ones that pass a gap
+// stay lit, whatever is straight above the point (the height memory cannot tell: it made all air under a canopy dark).
+float fogSunMapVisibility(vec3 offset, float lead) {
+    if ((fog.sunMapB.w & 1) == 0) return 1.0;
+    const vec2 taps[4] = vec2[4](vec2(-.25, -.25), vec2(.25, -.25), vec2(-.25, .25), vec2(.25, .25));
+    float lit = 0.0;
+    float h = fog.sunMapA.z + dot(offset, fog.sunS.xyz) + lead;
+    for (int i = 0; i < 4; ++i) {
+        vec3 o = offset + (fog.sunU.xyz * taps[i].x + fog.sunV.xyz * taps[i].y) * fog.sunMapA.w;
+        ivec2 cell = fogSunCell(o);
+        if (!fogSunInside(cell)) { lit += 1.0; continue; }
+        uint s = imageLoad(sunMap, fogMemoryTexel(cell)).r;
+        lit += s != 0u && h < fogHeightDecode(s) - 1.0 ? 0.0 : 1.0;
+    }
+    return lit * .25;
+}
+// Height memory: a point (relative to this camera) below the highest surface seen in its cell is under something - a
+// canopy, a roof, the inside of a cliff - even when that is off the screen now. Right for the sky straight above.
+bool fogMemoryBlocks(vec3 offset, float bias) {
+    if ((fog.memoryB.w & 1) == 0) return false;
+    ivec2 cell = fogMemoryCell(offset);
+    if (!fogMemoryInside(cell)) return false;
+    uint h = imageLoad(heightMap, fogMemoryTexel(cell)).r;
+    return h != 0u && fog.memoryA.z + offset.z < fogHeightDecode(h) - bias;
+}
+
+// A froxel cut by a surface can have its centre BEHIND it (underground): its own shadow is right, but the composite
+// interpolates it into the fog just in front of the surface - dark bands over open ground. So the lights are traced from
+// the visible surface instead: the point is pulled along its (shadow camera) view ray to just in front of the depth there.
+vec3 fogVisiblePoint(vec3 offset) {
+    if (!fogHaveDepth()) return offset;
+    vec3 p = offset + fog.shadowOffset.xyz;   // relative to the shadow camera
+    vec3 v0 = vec3(dot(p, fog.shadowRight.xyz), dot(p, fog.shadowUp.xyz), dot(p, fog.shadowForward.xyz));
+    if (v0.z <= .3) return offset;
+    vec2 ndc0 = v0.xy * vec2(fog.shadowRight.w, fog.shadowUp.w) / v0.z;
+    if (any(greaterThan(abs(ndc0), vec2(1.0)))) return offset;
+    ivec2 texel0 = clamp(ivec2((fog.shadowViewport.xy + (ndc0 * .5 + .5) * fog.shadowViewport.zw) / fog.shadowImage.z), ivec2(0), ivec2(fog.shadowImage.xy) - 1);
+    float d0 = abs(texelFetch(shadowDepth, texel0, 0).r), front = d0 - (.1 + .006 * d0);   // (abs: water is stored negative)
+    if (v0.z > front && front > .3) p *= front / v0.z;
+    return p - fog.shadowOffset.xyz;
+}
+
+// Sun: (a) the sun map (anything seen between the point and the sun, at any distance, also off the screen now), times
+// (b) a march toward it on the previous frame's screen: blocked when a sample lies behind a surface by less than the
+// surface's assumed thickness plus the depth covered by the last step (the SSR crossing test: a thin wall or trunk is not
+// skipped between two samples) - finer than the map's half-yard cells. Start and spacing jittered per froxel and frame.
+// The game's own sun shadows (roadmap M10: world-fixed, the ones the ground gets): the point in the view space of the frame
+// whose cascades were reduced, in the finest cascade holding it (fog::cascade_lookup), against 2x2 texels. -1 outside all
+// four or without them.
+float fogGameShadow(vec3 p) {
+    if (fog.cascadeInfo.x <= 0.0) return -1.0;
+    vec3 rel = p + fog.shadowOffset.xyz;
+    vec4 v = vec4(dot(rel, fog.shadowRight.xyz), dot(rel, fog.shadowUp.xyz), dot(rel, fog.shadowForward.xyz), 1.0);
+    float n = fog.cascadeInfo.z, edge = 1.0 - 2.0 / n;
+    for (int k = 0; k < 4; ++k) {
+        vec3 c = vec3(dot(fog.cascade[3 * k], v), dot(fog.cascade[3 * k + 1], v), dot(fog.cascade[3 * k + 2], v));
+        if (abs(c.x) > edge || abs(c.y) > edge) continue;
+        vec2 t = vec2(.5 + .5 * c.x, .5 - .5 * fog.cascadeInfo.w * c.y) * n - .5;
+        ivec2 i = ivec2(floor(t));
+        vec2 f = t - vec2(i);
+        vec4 stored = vec4(texelFetch(cascadeMaps, ivec3(i, k), 0).r, texelFetch(cascadeMaps, ivec3(i + ivec2(1, 0), k), 0).r,
+                           texelFetch(cascadeMaps, ivec3(i + ivec2(0, 1), k), 0).r, texelFetch(cascadeMaps, ivec3(i + ivec2(1, 1), k), 0).r);
+        vec4 lit = step(vec4(c.z - fog.cascadeInfo.y), stored);   // nothing nearer to the light than the point (less the bias)
+        return mix(mix(lit.x, lit.y, f.x), mix(lit.z, lit.w, f.x), f.y);
+    }
+    return -1.0;
+}
+
+float fogSunVisibility(vec3 p, uvec3 id) {
+    // Start clear of the point's own surroundings: at grazing angles the ground under it is about a yard per pixel row
+    // away at 100 yd, so the first samples must not find it "in front".
+    float start = .5 + .02 * length(p);
+    // The game's cascades hold its casters only (models, buildings - WoW draws no terrain into them): the land's shadows come
+    // from the sun map, world-anchored like the cascades (the camera-dependent screen march is not needed where they cover).
+    float game = fogGameShadow(p);
+    if (game >= 0.0) return min(game, fogSunMapVisibility(p, start));
+    float len = fog.shadowForward.w;
+    if (len <= 0.0) return 1.0;
+    const int steps = 16;
+    float j = fract(fogNoiseAt(id) + fog.jitter.z);
+    float mapped = fogSunMapVisibility(p, start);
+    if (mapped <= 0.0) return 0.0;
+    float previous = -1.0;
+    for (int i = 0; i < steps; ++i) {
+        float s = (float(i) + j) / float(steps);
+        vec3 q = p + fog.sunDir.xyz * (start + len * s * s);
+        if (!fogHaveDepth()) break;
+        vec3 qs = q + fog.shadowOffset.xyz;
+        vec3 v = vec3(dot(qs, fog.shadowRight.xyz), dot(qs, fog.shadowUp.xyz), dot(qs, fog.shadowForward.xyz));
+        if (v.z < .3) { previous = -1.0; continue; }
+        vec2 ndc = v.xy * vec2(fog.shadowRight.w, fog.shadowUp.w) / v.z;
+        if (any(greaterThan(abs(ndc), vec2(1.0)))) { previous = -1.0; continue; }
+        vec2 pixel = fog.shadowViewport.xy + (ndc * .5 + .5) * fog.shadowViewport.zw;
+        ivec2 texel = clamp(ivec2(pixel / fog.shadowImage.z), ivec2(0), ivec2(fog.shadowImage.xy) - 1);
+        float d = abs(texelFetch(shadowDepth, texel, 0).r);
+        float behind = v.z - d;
+        float thickness = max(1.5, .04 * d) + (previous >= 0.0 ? abs(v.z - previous) : 0.0);
+        if (behind > .1 + .006 * d && behind < thickness) return 0.0;
+        previous = v.z;
+    }
+    return mapped;
+}
+
+// Sky light from above: up to 100 yd along a direction tilted up to ~17 degrees from the zenith (rotating per froxel and
+// frame, so gap edges come out soft after temporal accumulation), against the height memory: under a canopy the fog loses
+// this share of the ambient, and columns of light come down through the openings.
+float fogSkyVisibility(vec3 p, uvec3 id) {
+    if ((fog.memoryB.w & 1) == 0 || (fog.memoryC.y <= 0.0 && fog.memoryC.w >= 1.0)) return 1.0;
+    float a = 6.2831853 * fract(fogNoiseAt(id) * 1.618 + fog.jitter.x);
+    vec3 dir = normalize(vec3(.3 * cos(a), .3 * sin(a), 1.0));
+    for (int i = 0; i < 8; ++i) {
+        float s = (float(i) + .5) / 8.0;
+        if (fogMemoryBlocks(p + dir * (1.0 + 100.0 * s * s), .3)) return 0.0;
+    }
+    return 1.0;
+}
+
+// Where this froxel's centre was in the previous frame's volume (uvw), or false when it was outside it.
+bool fogReproject(uvec3 id, out vec3 uvw) {
+    vec3 c = (vec3(id) + .5) / fog.grid.xyz;
+    float z = fogDepthOfSlice(c.z);
+    vec3 offset = fogWorldOffset(fogViewRay(c.xy * 2.0 - 1.0) * z) + fog.prevOffset.xyz;   // relative to the previous camera
+    vec3 v = vec3(dot(offset, fog.prevRight.xyz), dot(offset, fog.prevUp.xyz), dot(offset, fog.prevForward.xyz));
+    uvw = vec3(0);
+    if (v.z <= 1e-4) return false;
+    uvw = vec3(v.xy * vec2(fog.prevRight.w, fog.prevUp.w) / v.z * .5 + .5, fogSliceOfDepth(v.z));
+    return all(greaterThanEqual(uvw, vec3(0))) && all(lessThanEqual(uvw, vec3(1)));
+}
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    if (any(greaterThanEqual(id, uvec3(fog.grid.xyz)))) return;
+    vec4 m = imageLoad(medium, ivec3(id));
+    vec2 uv = (vec2(id.xy) + fog.jitter.xy) / fog.grid.xy;
+    vec3 ray = normalize(fogWorldOffset(fogViewRay(uv * 2.0 - 1.0)));
+    vec3 uvt = (vec3(id) + fog.jitter.xyz) / fog.grid.xyz;
+    float z = fogDepthOfSlice(uvt.z);
+    float sunVisibility = 1.0, skyVisibility = 1.0;
+    if (m.a > 0.0 || fog.mode.x == 6u || fog.mode.z == 1u) {
+        vec3 p = fogVisiblePoint(fogWorldOffset(fogViewRay(uvt.xy * 2.0 - 1.0) * z));
+        if (fog.sunDir.w > 0.0) sunVisibility = fogSunVisibility(p, id);
+        skyVisibility = fogSkyVisibility(p, id);
+    }
+    // debug SUN / SKY VISIBILITY: r = sun, b = sky (white: both reach it, orange: sun only, blue: sky only, black: neither)
+    if (fog.mode.z == 1u) imageStore(visibilityOut, ivec3(id), vec4(sunVisibility, 0.0, skyVisibility, 1.0));
+    if (fog.mode.x == 6u) { imageStore(lighting, ivec3(id), vec4(sunVisibility, 0.0, skyVisibility, 1.0)); return; }
+    // Under an open sky the sun is scaled by memoryC.w: every bit of open air is sunlit, and the strength that makes shafts
+    // under a canopy turned open zones into a white glare (Booty Bay). Only where the height memory can tell.
+    float openSun = (fog.memoryB.w & 1) != 0 ? mix(1.0, fog.memoryC.w, skyVisibility) : 1.0;
+    vec3 sun = fog.sunDir.w > 0.0 ? fog.sunColor.rgb * fogSunPhase(dot(ray, fog.sunDir.xyz)) * sunVisibility * openSun : vec3(0);
+    vec3 ambient = fog.ambient.rgb * (1.0 - fog.memoryC.y + fog.memoryC.y * skyVisibility);
+    vec4 current = vec4(m.rgb * (ambient + sun) + fog.emissive.rgb, m.a);
+    vec3 uvw;
+    if (fog.jitter.w > 0.0 && fogReproject(id, uvw)) current = mix(current, texture(history, uvw), fog.jitter.w);
+    imageStore(lighting, ivec3(id), current);
+}

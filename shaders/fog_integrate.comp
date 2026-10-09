@@ -1,0 +1,24 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Pass 3: front-to-back integration along each froxel column. Texel k holds the scattering/transmittance accumulated from
+// the camera to the END of slice k (t = (k + 1) / Z); fogSampleIntegrated() in the composite maps depth to that.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 2, rgba16f) uniform readonly image3D lighting;
+layout(set = 0, binding = 3, rgba16f) uniform writeonly image3D integrated;
+void main() {
+    uvec2 id = gl_GlobalInvocationID.xy;
+    if (any(greaterThanEqual(id, uvec2(fog.grid.xy)))) return;
+    vec2 uv = (vec2(id) + .5) / fog.grid.xy;
+    float rayScale = length(fogViewRay(uv * 2.0 - 1.0)); // path length per unit of view depth
+    uint slices = uint(fog.grid.z);
+    vec4 acc = vec4(0, 0, 0, 1);
+    float start = 0.0;
+    for (uint k = 0u; k < slices; ++k) {
+        vec4 l = imageLoad(lighting, ivec3(id, k));
+        float end = fogDepthOfSlice((float(k) + 1.0) / fog.grid.z);
+        acc = fogAccumulate(acc, fogSlab(l.rgb, l.a, (end - start) * rayScale));
+        imageStore(integrated, ivec3(id, k), acc);
+        start = end;
+    }
+}

@@ -1,0 +1,39 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Auto exposure, measuring (after the integration): the previous frame's quarter-resolution picture (before the fog) with
+// this frame's fog applied the way the composite applies it (fogShape) - roughly what the player sees before WoW's glow -
+// counted by log2 luminance. The host takes the key of the bright part and adapts the exposure (fog_math.hpp exposure_for).
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+#include "fog_common.glsl"
+layout(set = 0, binding = 3, rgba16f) uniform readonly image3D integrated;
+layout(set = 0, binding = 5) uniform sampler2D shadowDepth;
+layout(set = 0, binding = 11, rgba8) uniform readonly image2D sceneSmall;
+layout(set = 0, binding = 12, std430) buffer Readback { uint v[]; } found;
+// Counted per workgroup in shared memory, then added to the readback once per non-empty bin: 130k global atomics on a few
+// bins cost 1.6 ms (bench, 1660 Ti), the shared histogram a small fraction of it.
+shared uint local[fogExposureBins];
+void measure(ivec2 t);
+void main() {
+    uint i = gl_LocalInvocationIndex;
+    if (i < fogExposureBins) local[i] = 0u;
+    barrier();
+    ivec2 t = ivec2(gl_GlobalInvocationID.xy), size = imageSize(sceneSmall);
+    if (all(lessThan(t, size))) measure(t);
+    barrier();
+    if (i < fogExposureBins && local[i] != 0u) atomicAdd(found.v[uint(fog.memoryC.z) * fogReadbackWords + 16u + fogGroundBins + i], local[i]);
+}
+void measure(ivec2 t) {
+    vec3 c = imageLoad(sceneSmall, t).rgb;
+    ivec2 full = clamp(t * 4 + 2, ivec2(0), ivec2(fog.shadowImage.xy) - 1);
+    float d = abs(texelFetch(shadowDepth, full, 0).r);   // (water is stored negative)
+    bool world = d < 1e5;
+    float z = world ? min(d, fog.grid.w) : fog.grid.w;
+    vec2 uv = clamp(((vec2(full) + .5) - fog.shadowViewport.xy) / fog.shadowViewport.zw, 0.0, 1.0);
+    ivec3 g = ivec3(fog.grid.xyz);
+    float k = clamp(fogSliceOfDepth(z), 0.0, 1.0) * fog.grid.z - 1.0;
+    vec4 f = k < 0.0 ? vec4(0, 0, 0, 1) : imageLoad(integrated, clamp(ivec3(ivec2(uv * vec2(g.xy)), int(k + .5)), ivec3(0), g - 1));
+    f = fogShape(f, world);
+    vec3 seen = min(c * f.a + f.rgb, vec3(1.0));
+    float l = max(dot(seen, vec3(.2126, .7152, .0722)), 1.0 / 256.0);
+    atomicAdd(local[uint(clamp((log2(l) + 8.0) * 8.0, 0.0, float(fogExposureBins) - 1.0))], 1u);
+}
